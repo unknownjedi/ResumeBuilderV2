@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { AiProviderError } from "../../server/ai/types";
+import {
+  analyzeJobWithBudget,
+  JobAnalysisError,
+  type AnalyzeJobMode,
+} from "../../server/ai/workflows/analyze-job";
 import {
   ConnectorError,
   getConnectorForSourceType,
@@ -23,6 +29,12 @@ import {
   runJobDeduplicationPass,
   type NormalizedJobInput,
 } from "../../server/services/jobs";
+import {
+  computeJobMatch,
+  MatchingServiceError,
+  recomputeMatchesForJob,
+  recomputeMatchesForSearchProfile,
+} from "../../server/services/matching";
 import {
   buildSourceConfigFromRow,
   sanitizeSourceErrorText,
@@ -100,6 +112,19 @@ interface JobNormalizePayload {
 
 interface JobDeduplicatePayload {
   jobId?: string;
+}
+
+interface JobAnalyzePayload {
+  jobId?: string;
+  jobIds?: unknown[];
+  mode?: string;
+  searchProfileId?: string;
+  recomputeMatches?: boolean;
+}
+
+interface JobMatchPayload {
+  jobId?: string;
+  searchProfileId?: string;
 }
 
 const MAX_FETCH_PAGES = 50;
@@ -568,6 +593,42 @@ export async function handleSourceFetch(
       now: new Date(completedAt),
     });
 
+    // Run deterministic baseline matching for touched jobs before emitting job SSE updates
+    // so UI refetches observe populated match_runs immediately.
+    let baselineMatchedJobs = 0;
+    if (ingestResult.touchedJobIds.length > 0) {
+      ctx.reportProgress({
+        stage: "matching",
+        percent: 90,
+        resourceType: "source",
+        resourceId: sourceId,
+      });
+
+      for (const touchedJobId of ingestResult.touchedJobIds) {
+        if (ctx.isCancelled()) {
+          break;
+        }
+        try {
+          recomputeMatchesForJob(touchedJobId, db, ctx.sqlite);
+          baselineMatchedJobs++;
+        } catch (matchErr) {
+          logger.warn(
+            "source.fetch.baseline_match_failed",
+            "Deterministic baseline matching failed for ingested job.",
+            {
+              taskId: ctx.task.id,
+              sourceId,
+              meta: {
+                jobId: touchedJobId,
+                error:
+                  matchErr instanceof Error ? matchErr.message : "unknown_error",
+              },
+            }
+          );
+        }
+      }
+    }
+
     const runOutcome = allPagesCompleteSnapshot ? "succeeded" : "partial";
     const nextHealthState: SourceHealthState = !sourceRow.enabled
       ? "paused"
@@ -656,6 +717,7 @@ export async function handleSourceFetch(
         newCount: ingestResult.newCount,
         updatedCount: ingestResult.updatedCount,
         closedCount: ingestResult.closedCount,
+        baselineMatchedJobs,
       },
     });
 
@@ -666,6 +728,7 @@ export async function handleSourceFetch(
         sourceId,
         runId,
         outcome: runOutcome,
+        baselineMatchedJobs,
         ...ingestResult,
       },
     };
@@ -889,7 +952,244 @@ export async function handleJobDeduplicate(
 }
 
 /**
- * Builds the task handler registry for Slice 1–3 and future custom handlers.
+ * Analyzes one or more jobs (capped AI extraction or deterministic fallback)
+ * and recomputes deterministic matches for analyzed jobs.
+ */
+export async function handleJobAnalyze(
+  ctx: TaskHandlerContext
+): Promise<TaskHandlerResult> {
+  const payload = parseJsonPayload<JobAnalyzePayload>(ctx.task.payloadJson);
+  const jobIdsSet = new Set<string>();
+
+  if (typeof payload?.jobId === "string" && payload.jobId.trim().length > 0) {
+    jobIdsSet.add(payload.jobId.trim());
+  }
+  if (Array.isArray(payload?.jobIds)) {
+    for (const id of payload.jobIds) {
+      if (typeof id === "string" && id.trim().length > 0) {
+        jobIdsSet.add(id.trim());
+      }
+    }
+  }
+
+  const jobIds = Array.from(jobIdsSet);
+  if (jobIds.length === 0) {
+    throw new NonRetryableTaskError(
+      "INVALID_PAYLOAD",
+      "job.analyze requires a non-empty jobId or jobIds array."
+    );
+  }
+
+  const rawMode = payload?.mode;
+  const mode: AnalyzeJobMode =
+    rawMode === "ai_required" ||
+    rawMode === "deterministic" ||
+    rawMode === "auto_or_ai"
+      ? rawMode
+      : "auto_or_ai";
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const singleJobId = jobIds.length === 1 ? jobIds[0] : null;
+  ctx.reportProgress({
+    stage: "analyzing",
+    percent: 20,
+    resourceType: "job",
+    resourceId: singleJobId,
+  });
+
+  const db = drizzle(ctx.sqlite, { schema });
+  let analysisResult;
+  try {
+    analysisResult = await analyzeJobWithBudget({
+      jobIds,
+      mode,
+      taskId: ctx.task.id,
+      db,
+      sqlite: ctx.sqlite,
+    });
+  } catch (err) {
+    if (err instanceof AiProviderError) {
+      if (!err.retryable) {
+        throw new NonRetryableTaskError(err.code, err.message);
+      }
+      throw new Error(err.message);
+    }
+    if (err instanceof JobAnalysisError) {
+      throw new NonRetryableTaskError(err.code, err.message);
+    }
+    throw err;
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const shouldRecomputeMatches = payload?.recomputeMatches !== false;
+  const searchProfileId =
+    typeof payload?.searchProfileId === "string" &&
+    payload.searchProfileId.trim().length > 0
+      ? payload.searchProfileId.trim()
+      : undefined;
+
+  let matchesRecomputed = 0;
+  if (shouldRecomputeMatches && analysisResult.analyzedJobIds.length > 0) {
+    ctx.reportProgress({
+      stage: "matching",
+      percent: 80,
+      resourceType: "job",
+      resourceId: singleJobId,
+    });
+
+    for (const analyzedJobId of analysisResult.analyzedJobIds) {
+      if (ctx.isCancelled()) {
+        throw new TaskCancelledError();
+      }
+      if (searchProfileId) {
+        computeJobMatch({
+          jobId: analyzedJobId,
+          searchProfileId,
+          db,
+          sqlite: ctx.sqlite,
+        });
+        matchesRecomputed++;
+      } else {
+        const res = recomputeMatchesForJob(analyzedJobId, db, ctx.sqlite);
+        matchesRecomputed += res.recomputedCount;
+      }
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const updatedIds = analysisResult.analyzedJobIds;
+  if (updatedIds.length > 0) {
+    ctx.sqlite
+      .transaction(() => {
+        if (updatedIds.length <= MAX_PER_JOB_SSE_EVENTS) {
+          for (const id of updatedIds) {
+            emitResourceUpdatedSync(ctx.sqlite, ctx.task, "job", id, nowIso);
+          }
+        } else {
+          emitResourceUpdatedSync(ctx.sqlite, ctx.task, "job", null, nowIso);
+        }
+      })
+      .immediate();
+  }
+
+  ctx.reportProgress({
+    stage: "completed",
+    percent: 100,
+    resourceType: "job",
+    resourceId: singleJobId,
+  });
+
+  return {
+    resourceType: "job",
+    resourceId: singleJobId,
+    resultSummary: {
+      ...analysisResult,
+      matchesRecomputed,
+    },
+  };
+}
+
+/**
+ * Recomputes deterministic documented-fit and priority scores for a job and/or search profile.
+ */
+export async function handleJobMatch(
+  ctx: TaskHandlerContext
+): Promise<TaskHandlerResult> {
+  const payload = parseJsonPayload<JobMatchPayload>(ctx.task.payloadJson);
+  const jobId =
+    typeof payload?.jobId === "string" && payload.jobId.trim().length > 0
+      ? payload.jobId.trim()
+      : undefined;
+  const searchProfileId =
+    typeof payload?.searchProfileId === "string" &&
+    payload.searchProfileId.trim().length > 0
+      ? payload.searchProfileId.trim()
+      : undefined;
+
+  if (!jobId && !searchProfileId) {
+    throw new NonRetryableTaskError(
+      "INVALID_PAYLOAD",
+      "job.match requires jobId and/or searchProfileId."
+    );
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  ctx.reportProgress({
+    stage: "matching",
+    percent: 25,
+    resourceType: "job",
+    resourceId: jobId ?? null,
+  });
+
+  const db = drizzle(ctx.sqlite, { schema });
+  let resultSummary: unknown;
+
+  try {
+    if (jobId && searchProfileId) {
+      resultSummary = computeJobMatch({
+        jobId,
+        searchProfileId,
+        db,
+        sqlite: ctx.sqlite,
+      });
+    } else if (jobId) {
+      resultSummary = recomputeMatchesForJob(jobId, db, ctx.sqlite);
+    } else {
+      resultSummary = recomputeMatchesForSearchProfile(
+        searchProfileId!,
+        db,
+        ctx.sqlite
+      );
+    }
+  } catch (err) {
+    if (err instanceof MatchingServiceError) {
+      throw new NonRetryableTaskError(err.code, err.message);
+    }
+    throw err;
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const nowIso = new Date().toISOString();
+  ctx.sqlite
+    .transaction(() => {
+      emitResourceUpdatedSync(
+        ctx.sqlite,
+        ctx.task,
+        "job",
+        jobId ?? null,
+        nowIso
+      );
+    })
+    .immediate();
+
+  ctx.reportProgress({
+    stage: "completed",
+    percent: 100,
+    resourceType: "job",
+    resourceId: jobId ?? null,
+  });
+
+  return {
+    resourceType: "job",
+    resourceId: jobId ?? null,
+    resultSummary,
+  };
+}
+
+/**
+ * Builds the task handler registry for Slice 1–4 and future custom handlers.
  */
 export function createTaskHandlerRegistry(
   customHandlers?: Record<string, TaskHandler>
@@ -900,6 +1200,8 @@ export function createTaskHandlerRegistry(
   registry.set("source.fetch", handleSourceFetch);
   registry.set("job.normalize", handleJobNormalize);
   registry.set("job.deduplicate", handleJobDeduplicate);
+  registry.set("job.analyze", handleJobAnalyze);
+  registry.set("job.match", handleJobMatch);
 
   if (customHandlers) {
     for (const [taskType, handler] of Object.entries(customHandlers)) {

@@ -77,13 +77,91 @@ export interface JobSourceRecordItem {
   recordStatus: "open" | "possibly_closed" | "closed";
 }
 
+export type AnalysisStatus = "pending" | "deterministic" | "ai" | "failed";
+
+export type HardFilterStatus = "eligible" | "excluded" | "pending_analysis";
+
+export type RequirementCategory =
+  | "skill"
+  | "experience"
+  | "education"
+  | "responsibility"
+  | "domain"
+  | "other";
+
+export type RequirementPriority =
+  | "must_have"
+  | "preferred"
+  | "responsibility"
+  | "unspecified";
+
+export type MachineSupportState =
+  | "supported"
+  | "partially_supported"
+  | "not_found_in_profile"
+  | "ambiguous";
+
+export type CandidateResponse =
+  | "not_reviewed"
+  | "candidate_confirms_has"
+  | "candidate_confirms_does_not_have";
+
+export interface MatchFactorEntry {
+  key: string;
+  label: string;
+  score: number | null;
+  configuredWeight: number | null;
+  effectiveWeight: number | null;
+  included: boolean;
+  reason: string | null;
+}
+
+export interface MatchEvidenceItem {
+  id: string;
+  jobRequirementId: string;
+  supportState: MachineSupportState;
+  linkedFactType: string | null;
+  linkedFactId: string | null;
+  linkedFactLabel: string | null;
+  evidenceLinkId: string | null;
+  explanation: string | null;
+}
+
+export interface LatestMatchDetail {
+  id: string;
+  searchProfileId: string;
+  documentedFitScore: number | null;
+  searchSkillAlignmentScore: number | null;
+  priorityScore: number | null;
+  hardFilterPassed: boolean;
+  hardFilterStatus: HardFilterStatus;
+  renormalized: boolean;
+  includedFactors: MatchFactorEntry[];
+  omittedFactors: string[];
+  weightVersion: string | null;
+  calculationVersion: string | null;
+  analysisVersion: string | null;
+  createdAt: string | null;
+  evidence: MatchEvidenceItem[];
+}
+
 export interface JobRequirementSummary {
   id: string;
+  requirementKey: string | null;
   requirementText: string;
-  category: string;
-  priority: string;
-  machineSupportState: string;
-  candidateResponse: string;
+  normalizedSkill: string | null;
+  category: RequirementCategory | string;
+  priority: RequirementPriority;
+  userPriorityOverride: RequirementPriority | null;
+  effectivePriority: RequirementPriority;
+  machineSupportState: MachineSupportState;
+  candidateResponse: CandidateResponse;
+  extractionConfidence: number | null;
+  analysisSource: "deterministic" | "ai" | "manual";
+  analysisVersion: string | null;
+  overrideState: "active" | "orphaned";
+  overrideUpdatedAt: string | null;
+  evidence: MatchEvidenceItem[];
 }
 
 export interface JobListItem {
@@ -118,10 +196,16 @@ export interface JobListItem {
   canonicalUrl: string | null;
   applyUrl: string | null;
   mergedIntoJobId: string | null;
+  analysisStatus: AnalysisStatus;
+  analysisVersion: string | null;
+  analyzedAt: string | null;
   userState: UserJobDiscoveryState | null;
   userStateNotes: string | null;
   documentedFitScore: number | null;
+  searchSkillAlignmentScore: number | null;
   priorityScore: number | null;
+  hardFilterPassed: boolean;
+  hardFilterStatus: HardFilterStatus;
   sourceCount: number;
   duplicateCandidateCount: number;
   hasDuplicateCandidates: boolean;
@@ -133,6 +217,7 @@ export interface JobDetailItem extends JobListItem {
   sourceRecords: JobSourceRecordItem[];
   duplicateCandidates: DuplicateCandidateItem[];
   requirements: JobRequirementSummary[];
+  latestMatch: LatestMatchDetail | null;
   applicationId: string | null;
 }
 
@@ -428,6 +513,268 @@ export function normalizeJobSourceRecord(raw: unknown): JobSourceRecordItem | nu
   };
 }
 
+function isAnalysisStatus(val: string | null): val is AnalysisStatus {
+  return (
+    val === "pending" ||
+    val === "deterministic" ||
+    val === "ai" ||
+    val === "failed"
+  );
+}
+
+function isHardFilterStatus(val: string | null): val is HardFilterStatus {
+  return (
+    val === "eligible" ||
+    val === "excluded" ||
+    val === "pending_analysis"
+  );
+}
+
+function normalizeRequirementPriority(val: string | null): RequirementPriority {
+  if (
+    val === "must_have" ||
+    val === "preferred" ||
+    val === "responsibility" ||
+    val === "unspecified"
+  ) {
+    return val;
+  }
+  return "unspecified";
+}
+
+function normalizeMachineSupportState(val: string | null): MachineSupportState {
+  if (
+    val === "supported" ||
+    val === "partially_supported" ||
+    val === "not_found_in_profile" ||
+    val === "ambiguous"
+  ) {
+    return val;
+  }
+  return "not_found_in_profile";
+}
+
+function normalizeCandidateResponse(val: string | null): CandidateResponse {
+  if (
+    val === "not_reviewed" ||
+    val === "candidate_confirms_has" ||
+    val === "candidate_confirms_does_not_have"
+  ) {
+    return val;
+  }
+  return "not_reviewed";
+}
+
+function normalizeMatchEvidenceItem(raw: unknown): MatchEvidenceItem | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  const id =
+    pickString(rec, ["id"]) ??
+    `${pickString(rec, ["jobRequirementId", "job_requirement_id"]) ?? "ev"}-${pickString(rec, ["linkedFactId", "linked_fact_id"]) ?? "fact"}`;
+  const jobRequirementId =
+    pickString(rec, ["jobRequirementId", "job_requirement_id", "requirementId"]) ??
+    "";
+  return {
+    id,
+    jobRequirementId,
+    supportState: normalizeMachineSupportState(
+      pickString(rec, ["supportState", "support_state"])
+    ),
+    linkedFactType: pickString(rec, ["linkedFactType", "linked_fact_type"]),
+    linkedFactId: pickString(rec, ["linkedFactId", "linked_fact_id"]),
+    linkedFactLabel: pickString(rec, [
+      "linkedFactLabel",
+      "linked_fact_label",
+      "factLabel",
+      "label",
+    ]),
+    evidenceLinkId: pickString(rec, ["evidenceLinkId", "evidence_link_id"]),
+    explanation: pickString(rec, ["explanation", "reason"]),
+  };
+}
+
+const FACTOR_LABELS: Record<string, string> = {
+  documentedFit: "Candidate documented fit",
+  documented_fit: "Candidate documented fit",
+  searchSkillAlignment: "Search-profile skill alignment",
+  search_skill_alignment: "Search-profile skill alignment",
+  freshness: "Freshness",
+  location: "Location / work mode",
+  locationWorkMode: "Location / work mode",
+  locationWorkplace: "Location / work mode",
+  location_workplace: "Location / work mode",
+  compensation: "Compensation fit",
+  company: "Company / industry preference",
+  companyIndustry: "Company / industry preference",
+  company_industry: "Company / industry preference",
+};
+
+function normalizeIncludedFactors(raw: unknown): {
+  factors: MatchFactorEntry[];
+  omitted: string[];
+  renormalized: boolean;
+} {
+  const parsed = parseJsonField(raw);
+  const factors: MatchFactorEntry[] = [];
+  const omitted: string[] = [];
+  let renormalized = false;
+
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const rec = asRecord(item);
+      if (!rec) continue;
+      const key = pickString(rec, ["key", "factor", "name"]) ?? "factor";
+      const included =
+        typeof rec.included === "boolean" ? rec.included : true;
+      const label =
+        pickString(rec, ["label"]) ?? FACTOR_LABELS[key] ?? key;
+      if (!included) omitted.push(label);
+      factors.push({
+        key,
+        label,
+        score: pickNumber(rec, ["score"]),
+        configuredWeight: pickNumber(rec, [
+          "configuredWeight",
+          "weightPercent",
+          "weight",
+        ]),
+        effectiveWeight: pickNumber(rec, [
+          "effectiveWeight",
+          "renormalizedWeight",
+          "effective_weight",
+        ]),
+        included,
+        reason: pickString(rec, ["reason", "omitReason"]),
+      });
+    }
+    renormalized = omitted.length > 0;
+    return { factors, omitted, renormalized };
+  }
+
+  const rec = asRecord(parsed);
+  if (!rec) return { factors, omitted, renormalized: false };
+
+  if (typeof rec.renormalized === "boolean") {
+    renormalized = rec.renormalized;
+  }
+  if (Array.isArray(rec.omittedFactors)) {
+    for (const o of rec.omittedFactors) {
+      if (typeof o === "string" && o.trim()) {
+        omitted.push(FACTOR_LABELS[o] ?? o);
+      }
+    }
+  }
+
+  const rawList = Array.isArray(rec.factors) ? rec.factors : null;
+  if (rawList) {
+    const nested = normalizeIncludedFactors(rawList);
+    return {
+      factors: nested.factors,
+      omitted: omitted.length > 0 ? omitted : nested.omitted,
+      renormalized: renormalized || nested.renormalized,
+    };
+  }
+
+  for (const [key, val] of Object.entries(rec)) {
+    if (key === "renormalized" || key === "omittedFactors") continue;
+    const fRec = asRecord(val);
+    if (!fRec) continue;
+    const included = typeof fRec.included === "boolean" ? fRec.included : true;
+    const label = pickString(fRec, ["label"]) ?? FACTOR_LABELS[key] ?? key;
+    if (!included && !omitted.includes(label)) omitted.push(label);
+    factors.push({
+      key,
+      label,
+      score: pickNumber(fRec, ["score"]),
+      configuredWeight: pickNumber(fRec, [
+        "configuredWeight",
+        "weightPercent",
+        "weight",
+      ]),
+      effectiveWeight: pickNumber(fRec, [
+        "effectiveWeight",
+        "renormalizedWeight",
+      ]),
+      included,
+      reason: pickString(fRec, ["reason", "omitReason"]),
+    });
+  }
+
+  return {
+    factors,
+    omitted,
+    renormalized: renormalized || omitted.length > 0,
+  };
+}
+
+export function normalizeLatestMatch(
+  rawMatch: unknown,
+  rawEvidence?: unknown
+): LatestMatchDetail | null {
+  const rec = asRecord(rawMatch);
+  if (!rec) return null;
+  const id = pickString(rec, ["id"]) ?? "latest-match";
+  const searchProfileId =
+    pickString(rec, ["searchProfileId", "search_profile_id"]) ?? "";
+
+  const factorInfo = normalizeIncludedFactors(
+    rec.includedFactors ?? rec.includedFactorsJson ?? rec.included_factors_json
+  );
+  const rawEvidenceList = Array.isArray(rawEvidence)
+    ? rawEvidence
+    : Array.isArray(rec.evidence)
+      ? rec.evidence
+      : [];
+  const evidence = rawEvidenceList
+    .map(normalizeMatchEvidenceItem)
+    .filter((e): e is MatchEvidenceItem => e !== null);
+
+  const rawHardStatus = pickString(rec, [
+    "hardFilterStatus",
+    "hard_filter_status",
+  ]);
+  const hardFilterPassed =
+    typeof rec.hardFilterPassed === "boolean"
+      ? rec.hardFilterPassed
+      : rec.hard_filter_passed === 0
+        ? false
+        : true;
+
+  return {
+    id,
+    searchProfileId,
+    documentedFitScore: pickNumber(rec, [
+      "documentedFitScore",
+      "documented_fit_score",
+    ]),
+    searchSkillAlignmentScore: pickNumber(rec, [
+      "searchSkillAlignmentScore",
+      "search_skill_alignment_score",
+    ]),
+    priorityScore: pickNumber(rec, ["priorityScore", "priority_score"]),
+    hardFilterPassed,
+    hardFilterStatus: isHardFilterStatus(rawHardStatus)
+      ? rawHardStatus
+      : hardFilterPassed
+        ? "eligible"
+        : "excluded",
+    renormalized:
+      typeof rec.renormalized === "boolean"
+        ? rec.renormalized
+        : factorInfo.renormalized,
+    includedFactors: factorInfo.factors,
+    omittedFactors: factorInfo.omitted,
+    weightVersion: pickString(rec, ["weightVersion", "weight_version"]),
+    calculationVersion: pickString(rec, [
+      "calculationVersion",
+      "calculation_version",
+    ]),
+    analysisVersion: pickString(rec, ["analysisVersion", "analysis_version"]),
+    createdAt: pickString(rec, ["createdAt", "created_at"]),
+    evidence,
+  };
+}
+
 export function normalizeJobListItem(raw: unknown): JobListItem | null {
   const rec = asRecord(raw);
   if (!rec) return null;
@@ -447,6 +794,10 @@ export function normalizeJobListItem(raw: unknown): JobListItem | null {
     "user_state",
     "discoveryState",
     "discovery_state",
+  ]);
+  const rawAnalysisStatus = pickString(rec, [
+    "analysisStatus",
+    "analysis_status",
   ]);
 
   const compensationOverride = normalizeCompensationOverride(
@@ -474,6 +825,19 @@ export function normalizeJobListItem(raw: unknown): JobListItem | null {
     ]) ?? 0;
 
   const matchRec = asRecord(rec.match) ?? asRecord(rec.latestMatch);
+  const rawHardStatus =
+    pickString(rec, ["hardFilterStatus", "hard_filter_status"]) ??
+    (matchRec
+      ? pickString(matchRec, ["hardFilterStatus", "hard_filter_status"])
+      : null);
+  const hardFilterPassed =
+    typeof rec.hardFilterPassed === "boolean"
+      ? rec.hardFilterPassed
+      : matchRec && typeof matchRec.hardFilterPassed === "boolean"
+        ? matchRec.hardFilterPassed
+        : matchRec && matchRec.hard_filter_passed === 0
+          ? false
+          : true;
 
   return {
     id,
@@ -528,6 +892,11 @@ export function normalizeJobListItem(raw: unknown): JobListItem | null {
     canonicalUrl: pickString(rec, ["canonicalUrl", "canonical_url"]),
     applyUrl: pickString(rec, ["applyUrl", "apply_url"]),
     mergedIntoJobId: pickString(rec, ["mergedIntoJobId", "merged_into_job_id"]),
+    analysisStatus: isAnalysisStatus(rawAnalysisStatus)
+      ? rawAnalysisStatus
+      : "pending",
+    analysisVersion: pickString(rec, ["analysisVersion", "analysis_version"]),
+    analyzedAt: pickString(rec, ["analyzedAt", "analyzed_at"]),
     userState: isUserState(rawUserState) ? rawUserState : null,
     userStateNotes: pickString(rec, ["userStateNotes", "user_state_notes", "notes"]),
     documentedFitScore:
@@ -535,9 +904,26 @@ export function normalizeJobListItem(raw: unknown): JobListItem | null {
       (matchRec
         ? pickNumber(matchRec, ["documentedFitScore", "documented_fit_score"])
         : null),
+    searchSkillAlignmentScore:
+      pickNumber(rec, [
+        "searchSkillAlignmentScore",
+        "search_skill_alignment_score",
+      ]) ??
+      (matchRec
+        ? pickNumber(matchRec, [
+            "searchSkillAlignmentScore",
+            "search_skill_alignment_score",
+          ])
+        : null),
     priorityScore:
       pickNumber(rec, ["priorityScore", "priority_score"]) ??
       (matchRec ? pickNumber(matchRec, ["priorityScore", "priority_score"]) : null),
+    hardFilterPassed,
+    hardFilterStatus: isHardFilterStatus(rawHardStatus)
+      ? rawHardStatus
+      : hardFilterPassed
+        ? "eligible"
+        : "excluded",
     sourceCount: pickNumber(rec, ["sourceCount", "source_count"]) ?? 1,
     duplicateCandidateCount: dupCount,
     hasDuplicateCandidates:
@@ -631,14 +1017,31 @@ export function normalizeJobDetailItem(raw: unknown): JobDetailItem | null {
   const resolvedCompensationOverride =
     rootCompensationOverride ?? base.compensationOverride;
 
-  const rootMatch = asRecord(root.latestMatch) ?? asRecord(root.match);
+  const rootMatchRaw = root.latestMatch ?? root.match;
+  const rootMatch = asRecord(rootMatchRaw);
+  const latestMatch = normalizeLatestMatch(
+    rootMatchRaw,
+    root.matchEvidence ?? root.evidence ?? rootMatch?.evidence
+  );
+
   const resolvedFitScore =
     base.documentedFitScore ??
+    latestMatch?.documentedFitScore ??
     (rootMatch
       ? pickNumber(rootMatch, ["documentedFitScore", "documented_fit_score"])
       : null);
+  const resolvedSkillAlignScore =
+    base.searchSkillAlignmentScore ??
+    latestMatch?.searchSkillAlignmentScore ??
+    (rootMatch
+      ? pickNumber(rootMatch, [
+          "searchSkillAlignmentScore",
+          "search_skill_alignment_score",
+        ])
+      : null);
   const resolvedPriorityScore =
     base.priorityScore ??
+    latestMatch?.priorityScore ??
     (rootMatch ? pickNumber(rootMatch, ["priorityScore", "priority_score"]) : null);
 
   const rawSourceRecords = Array.isArray(root.jobSourceRecords)
@@ -665,6 +1068,16 @@ export function normalizeJobDetailItem(raw: unknown): JobDetailItem | null {
     .map(normalizeDuplicateCandidate)
     .filter((d): d is DuplicateCandidateItem => d !== null);
 
+  const evidenceByRequirementId = new Map<string, MatchEvidenceItem[]>();
+  if (latestMatch) {
+    for (const ev of latestMatch.evidence) {
+      if (!ev.jobRequirementId) continue;
+      const list = evidenceByRequirementId.get(ev.jobRequirementId) ?? [];
+      list.push(ev);
+      evidenceByRequirementId.set(ev.jobRequirementId, list);
+    }
+  }
+
   const rawReqs = Array.isArray(root.requirements)
     ? root.requirements
     : Array.isArray(jobRec.requirements)
@@ -680,17 +1093,72 @@ export function normalizeJobDetailItem(raw: unknown): JobDetailItem | null {
         "requirement_text",
       ]);
       if (!reqId || !requirementText) return null;
+
+      const extractedPriority = normalizeRequirementPriority(
+        pickString(r, ["priority"])
+      );
+      const rawUserPriority = pickString(r, [
+        "userPriorityOverride",
+        "user_priority_override",
+      ]);
+      const userPriorityOverride = rawUserPriority
+        ? normalizeRequirementPriority(rawUserPriority)
+        : null;
+
+      const nestedEvidence = Array.isArray(r.evidence)
+        ? r.evidence
+            .map(normalizeMatchEvidenceItem)
+            .filter((e): e is MatchEvidenceItem => e !== null)
+        : [];
+      const matchedEvidence =
+        nestedEvidence.length > 0
+          ? nestedEvidence
+          : evidenceByRequirementId.get(reqId) ?? [];
+
+      const rawSource = pickString(r, ["analysisSource", "analysis_source"]);
+      const analysisSource: JobRequirementSummary["analysisSource"] =
+        rawSource === "ai" || rawSource === "manual"
+          ? rawSource
+          : "deterministic";
+      const rawOverrideState = pickString(r, [
+        "overrideState",
+        "override_state",
+      ]);
+
       return {
         id: reqId,
+        requirementKey: pickString(r, ["requirementKey", "requirement_key"]),
         requirementText,
+        normalizedSkill: pickString(r, [
+          "normalizedSkill",
+          "normalized_skill",
+        ]),
         category: pickString(r, ["category"]) ?? "other",
-        priority: pickString(r, ["priority"]) ?? "unspecified",
-        machineSupportState:
-          pickString(r, ["machineSupportState", "machine_support_state"]) ??
-          "not_found_in_profile",
-        candidateResponse:
-          pickString(r, ["candidateResponse", "candidate_response"]) ??
-          "not_reviewed",
+        priority: extractedPriority,
+        userPriorityOverride,
+        effectivePriority: userPriorityOverride ?? extractedPriority,
+        machineSupportState: normalizeMachineSupportState(
+          pickString(r, ["machineSupportState", "machine_support_state"])
+        ),
+        candidateResponse: normalizeCandidateResponse(
+          pickString(r, ["candidateResponse", "candidate_response"])
+        ),
+        extractionConfidence: pickNumber(r, [
+          "extractionConfidence",
+          "extraction_confidence",
+        ]),
+        analysisSource,
+        analysisVersion: pickString(r, [
+          "analysisVersion",
+          "analysis_version",
+        ]),
+        overrideState:
+          rawOverrideState === "orphaned" ? "orphaned" : "active",
+        overrideUpdatedAt: pickString(r, [
+          "overrideUpdatedAt",
+          "override_updated_at",
+        ]),
+        evidence: matchedEvidence,
       };
     })
     .filter((r): r is JobRequirementSummary => r !== null);
@@ -712,7 +1180,13 @@ export function normalizeJobDetailItem(raw: unknown): JobDetailItem | null {
           ? "user_supplied"
           : base.salarySourceType,
     documentedFitScore: resolvedFitScore,
+    searchSkillAlignmentScore: resolvedSkillAlignScore,
     priorityScore: resolvedPriorityScore,
+    hardFilterPassed:
+      latestMatch?.hardFilterPassed ?? base.hardFilterPassed,
+    hardFilterStatus:
+      latestMatch?.hardFilterStatus ?? base.hardFilterStatus,
+    latestMatch,
     duplicateCandidateCount: Math.max(
       base.duplicateCandidateCount,
       duplicateCandidates.length

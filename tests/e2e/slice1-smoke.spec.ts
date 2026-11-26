@@ -18,7 +18,7 @@ test.describe("Slice 1 Local Foundation Smoke", () => {
     expect(cspHeader).toContain("script-src 'self' 'nonce-");
     expect(cspHeader).not.toContain("'unsafe-eval'");
 
-    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview", level: 2 })).toBeVisible();
 
     // Verify all 7 navigation links exist
     for (const label of [

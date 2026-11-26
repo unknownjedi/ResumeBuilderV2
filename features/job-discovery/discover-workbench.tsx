@@ -948,6 +948,11 @@ export function DiscoverWorkbench({
                       {isSaved && stateFilter !== "saved" ? (
                         <Badge tone="accent">Saved</Badge>
                       ) : null}
+                      {job.hardFilterStatus === "excluded" ? (
+                        <Badge tone="neutral">Filtered out</Badge>
+                      ) : job.hardFilterStatus === "pending_analysis" ? (
+                        <Badge tone="warning">Pending analysis</Badge>
+                      ) : null}
                     </div>
 
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-[var(--text-secondary)]">
@@ -971,14 +976,49 @@ export function DiscoverWorkbench({
 
                   {/* Right metadata & quick optimistic actions */}
                   <div className="flex shrink-0 items-center gap-1.5">
-                    {typeof job.documentedFitScore === "number" ? (
-                      <span
-                        title="Documented-fit score"
-                        className="mr-1 rounded-[4px] border border-[var(--border)] bg-[var(--canvas)] px-2 py-0.5 font-data text-[12px] font-medium text-[var(--text-primary)]"
-                      >
-                        {Math.round(job.documentedFitScore)}%
-                      </span>
-                    ) : null}
+                    <div className="mr-1 flex flex-wrap items-center justify-end gap-1.5">
+                      {typeof job.documentedFitScore === "number" ? (
+                        <span
+                          title="Documented-fit score (based on verified career profile facts)"
+                          className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--border)] bg-[var(--canvas)] px-2 py-0.5 font-data text-[12px] font-medium text-[var(--text-primary)]"
+                        >
+                          <span>Fit {Math.round(job.documentedFitScore)}%</span>
+                          <span
+                            aria-hidden="true"
+                            className="inline-block h-1.5 w-8 overflow-hidden rounded-[2px] bg-[var(--surface-muted)]"
+                          >
+                            <span
+                              className="block h-full bg-[var(--accent)]"
+                              style={{
+                                width: `${Math.max(0, Math.min(100, Math.round(job.documentedFitScore)))}%`,
+                              }}
+                            />
+                          </span>
+                        </span>
+                      ) : job.analysisStatus === "pending" ? (
+                        <span className="rounded-[4px] border border-[var(--border)] bg-[var(--canvas)] px-2 py-0.5 font-data text-[11px] text-[var(--text-tertiary)]">
+                          Not analyzed
+                        </span>
+                      ) : null}
+
+                      {typeof job.searchSkillAlignmentScore === "number" ? (
+                        <span
+                          title="Search-profile skill alignment"
+                          className="hidden rounded-[4px] border border-[var(--border)] bg-[var(--canvas)] px-2 py-0.5 font-data text-[12px] text-[var(--text-secondary)] sm:inline-flex"
+                        >
+                          Skill {Math.round(job.searchSkillAlignmentScore)}%
+                        </span>
+                      ) : null}
+
+                      {typeof job.priorityScore === "number" ? (
+                        <span
+                          title="Personal priority score"
+                          className="rounded-[4px] border border-[#C4D6CA] bg-[var(--accent-soft)] px-2 py-0.5 font-data text-[12px] font-semibold text-[var(--accent)]"
+                        >
+                          P{Math.round(job.priorityScore)}
+                        </span>
+                      ) : null}
+                    </div>
 
                     <Button
                       variant="ghost"
@@ -1102,6 +1142,12 @@ export function DiscoverWorkbench({
                   void handleChangeJobState(drawerJob.id, nextState)
                 }
                 onReviewDuplicates={() => setDuplicateDialogOpen(true)}
+                onJobUpdated={(updated) => {
+                  if (updated) {
+                    setDrawerJob(updated);
+                  }
+                  void fetchJobs(true);
+                }}
               />
             ) : null}
           </DrawerBody>
