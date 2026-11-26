@@ -1,0 +1,61 @@
+{
+  "name": "personal-job-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "packageManager": "npm@11.12.1",
+  "scripts": {
+    "dev": "concurrently --kill-others --names web,worker \"next dev --hostname 127.0.0.1\" \"tsx watch worker/bootstrap.ts\"",
+    "build:worker": "tsc -p worker/tsconfig.json && node -e \"if(!require('fs').existsSync('worker/dist/worker/bootstrap.js')){process.exit(1)}\"",
+    "build": "next build && npm run build:worker",
+    "start:local": "concurrently --kill-others --names web,worker \"next start --hostname 127.0.0.1\" \"node worker/dist/worker/bootstrap.js\"",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit && tsc -p worker/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "setup:pdf-browser": "node scripts/setup-pdf-browser.mjs",
+    "test:e2e": "node scripts/run-playwright-tests.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@dnd-kit/helpers": "0.5.3",
+    "@dnd-kit/react": "0.5.3",
+    "better-sqlite3": "13.2.0",
+    "cheerio": "1.2.0",
+    "concurrently": "10.0.7",
+    "docx": "9.16.0",
+    "drizzle-orm": "0.45.4",
+    "geist": "1.9.2",
+    "lucide-react": "1.78.0",
+    "mammoth": "1.13.0",
+    "motion": "14.14.0",
+    "next": "16.4.6",
+    "pdfjs-dist": "6.5.438",
+    "playwright": "1.65.1",
+    "radix-ui": "1.8.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "sanitize-html": "2.18.2",
+    "tar": "7.5.23",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@tailwindcss/postcss": "4.3.5",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.1",
+    "@types/react-dom": "19.3.0",
+    "@types/sanitize-html": "2.16.2",
+    "drizzle-kit": "0.31.11",
+    "eslint": "10.15.0",
+    "eslint-config-next": "16.4.6",
+    "postcss": "8.5.33",
+    "tailwindcss": "4.3.5",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

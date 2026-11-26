@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+worker/dist/
+.env.local
+.env.*.local
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+playwright-report/
+test-results/
+.DS_Store
+coverage/
