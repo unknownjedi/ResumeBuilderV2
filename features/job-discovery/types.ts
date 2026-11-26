@@ -1,0 +1,850 @@
+export type WorkplaceType = "remote" | "hybrid" | "onsite" | "unspecified";
+
+export type JobStatus = "open" | "possibly_closed" | "closed" | "unknown";
+
+export type SalaryPeriod = "hour" | "month" | "year" | "unknown";
+
+export type SalaryProvenance =
+  | "employer_disclosed"
+  | "user_supplied"
+  | "unknown";
+
+export type UserJobDiscoveryState = "saved" | "dismissed" | "hidden";
+
+export type JobUserStateFilter = "active" | "saved" | "dismissed" | "all";
+
+export type JobSortOption =
+  | "recommended"
+  | "documented_fit"
+  | "employer_posted_at"
+  | "first_seen_at"
+  | "company_title";
+
+export type PostedDateFilter =
+  | "any"
+  | "24h"
+  | "3d"
+  | "7d"
+  | "30d"
+  | "known_only"
+  | "unknown_only";
+
+export type FreshnessLabel =
+  | "Very recent"
+  | "Recent"
+  | "This week"
+  | "Older"
+  | "Date unknown";
+
+export interface DateConflictEntry {
+  sourceId: string | null;
+  sourceName: string | null;
+  postedAt: string;
+  rawText: string | null;
+}
+
+export interface DateConflictInfo {
+  summary: string | null;
+  entries: DateConflictEntry[];
+}
+
+export interface CompensationOverrideItem {
+  id: string | null;
+  minAmount: number | null;
+  maxAmount: number | null;
+  currency: string | null;
+  period: SalaryPeriod | null;
+  provenance: string;
+  note: string | null;
+  updatedAt: string | null;
+}
+
+export interface JobSourceRecordItem {
+  id: string;
+  jobId: string;
+  sourceId: string;
+  sourceName: string | null;
+  sourceType: string | null;
+  externalId: string;
+  sourceUrl: string | null;
+  applyUrl: string | null;
+  sourcePostedAtText: string | null;
+  sourcePostedAt: string | null;
+  sourceUpdatedAt: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  missingRunCount: number;
+  recordStatus: "open" | "possibly_closed" | "closed";
+}
+
+export interface JobRequirementSummary {
+  id: string;
+  requirementText: string;
+  category: string;
+  priority: string;
+  machineSupportState: string;
+  candidateResponse: string;
+}
+
+export interface JobListItem {
+  id: string;
+  companyId: string | null;
+  companyName: string;
+  primarySourceId: string | null;
+  primarySourceName: string | null;
+  primarySourceType: string | null;
+  title: string;
+  descriptionSnippet: string | null;
+  locationText: string | null;
+  countryCode: string | null;
+  workplaceType: WorkplaceType;
+  employmentType: string | null;
+  seniorityLevel: string | null;
+  seniorityMinYears: number | null;
+  seniorityMaxYears: number | null;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  salaryCurrency: string | null;
+  salaryPeriod: SalaryPeriod | null;
+  salarySourceType: SalaryProvenance;
+  compensationOverride: CompensationOverrideItem | null;
+  employerPostedAt: string | null;
+  dateConflict: DateConflictInfo | null;
+  sourceUpdatedAt: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastVerifiedAt: string;
+  status: JobStatus;
+  canonicalUrl: string | null;
+  applyUrl: string | null;
+  mergedIntoJobId: string | null;
+  userState: UserJobDiscoveryState | null;
+  userStateNotes: string | null;
+  documentedFitScore: number | null;
+  priorityScore: number | null;
+  sourceCount: number;
+  duplicateCandidateCount: number;
+  hasDuplicateCandidates: boolean;
+}
+
+export interface JobDetailItem extends JobListItem {
+  descriptionText: string;
+  descriptionHtmlSanitized: string | null;
+  sourceRecords: JobSourceRecordItem[];
+  duplicateCandidates: DuplicateCandidateItem[];
+  requirements: JobRequirementSummary[];
+  applicationId: string | null;
+}
+
+export interface DuplicateJobSummary {
+  id: string;
+  title: string;
+  companyName: string;
+  locationText: string | null;
+  workplaceType: WorkplaceType;
+  employmentType: string | null;
+  canonicalUrl: string | null;
+  applyUrl: string | null;
+  employerPostedAt: string | null;
+  firstSeenAt: string;
+  status: JobStatus;
+  sourceNames: string[];
+}
+
+export interface DuplicateCandidateItem {
+  id: string;
+  jobAId: string;
+  jobBId: string;
+  matchMethod: string;
+  evidence: Record<string, unknown>;
+  similarityScore: number;
+  state: "proposed" | "dismissed" | "merged";
+  createdAt: string;
+  dismissedAt: string | null;
+  resolvedAt: string | null;
+  jobA: DuplicateJobSummary | null;
+  jobB: DuplicateJobSummary | null;
+}
+
+export interface SourceFilterOption {
+  id: string;
+  displayName: string;
+  sourceType: string;
+}
+
+export interface JobsListResponse {
+  items: JobListItem[];
+  total: number;
+  pendingDuplicateCount: number;
+  sources: SourceFilterOption[];
+}
+
+export interface ListJobsParams {
+  q?: string;
+  state?: JobUserStateFilter;
+  sourceId?: string;
+  workplaceType?: WorkplaceType | "all";
+  postedDate?: PostedDateFilter;
+  sort?: JobSortOption;
+  searchProfileId?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ImportJobInput {
+  url?: string;
+  descriptionText?: string;
+  title?: string;
+  companyName?: string;
+  locationText?: string;
+  workplaceType?: WorkplaceType;
+  employmentType?: string;
+}
+
+export interface ImportJobResponse {
+  job: JobDetailItem;
+  duplicateCandidates: DuplicateCandidateItem[];
+  created: boolean;
+}
+
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function pickString(obj: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const val = obj[key];
+    if (typeof val === "string" && val.length > 0) return val;
+  }
+  return null;
+}
+
+function pickNumber(obj: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const val = obj[key];
+    if (typeof val === "number" && Number.isFinite(val)) return val;
+  }
+  return null;
+}
+
+export function extractApiErrorMessage(payload: unknown, fallback: string): string {
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+  const root = asRecord(payload);
+  if (!root) return fallback;
+
+  const nested = asRecord(root.error);
+  if (nested) {
+    const msg = pickString(nested, ["message", "detail"]);
+    const code = pickString(nested, ["code"]);
+    if (msg && code) return `${msg} (${code})`;
+    if (msg) return msg;
+  }
+
+  return pickString(root, ["message", "error", "detail"]) ?? fallback;
+}
+
+function isWorkplaceType(val: string | null): val is WorkplaceType {
+  return (
+    val === "remote" ||
+    val === "hybrid" ||
+    val === "onsite" ||
+    val === "unspecified"
+  );
+}
+
+function isJobStatus(val: string | null): val is JobStatus {
+  return (
+    val === "open" ||
+    val === "possibly_closed" ||
+    val === "closed" ||
+    val === "unknown"
+  );
+}
+
+function isSalaryPeriod(val: string | null): val is SalaryPeriod {
+  return val === "hour" || val === "month" || val === "year" || val === "unknown";
+}
+
+function isUserState(val: string | null): val is UserJobDiscoveryState {
+  return val === "saved" || val === "dismissed" || val === "hidden";
+}
+
+function parseJsonField(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+export function normalizeDateConflict(raw: unknown): DateConflictInfo | null {
+  if (!raw) return null;
+  const parsed = parseJsonField(raw);
+  if (!parsed) return null;
+
+  if (typeof parsed === "string") {
+    return parsed.trim() ? { summary: parsed.trim(), entries: [] } : null;
+  }
+
+  const entries: DateConflictEntry[] = [];
+  let summary: string | null = null;
+
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const rec = asRecord(item);
+      if (!rec) continue;
+      const postedAt = pickString(rec, ["postedAt", "posted_at", "date", "value"]);
+      if (!postedAt) continue;
+      entries.push({
+        sourceId: pickString(rec, ["sourceId", "source_id"]),
+        sourceName: pickString(rec, ["sourceName", "source_name", "source"]),
+        postedAt,
+        rawText: pickString(rec, ["rawText", "raw_text", "text"]),
+      });
+    }
+  } else {
+    const rec = asRecord(parsed);
+    if (rec) {
+      if (rec.hasConflict === false) return null;
+      summary = pickString(rec, ["summary", "message", "reason"]);
+      const rawEntries = Array.isArray(rec.sources)
+        ? rec.sources
+        : Array.isArray(rec.values)
+          ? rec.values
+          : Array.isArray(rec.dates)
+            ? rec.dates
+            : [];
+      for (const item of rawEntries) {
+        if (typeof item === "string") {
+          entries.push({
+            sourceId: null,
+            sourceName: null,
+            postedAt: item,
+            rawText: null,
+          });
+        } else {
+          const entryRec = asRecord(item);
+          if (!entryRec) continue;
+          const postedAt = pickString(entryRec, [
+            "postedAt",
+            "posted_at",
+            "date",
+            "value",
+          ]);
+          if (!postedAt) continue;
+          entries.push({
+            sourceId: pickString(entryRec, ["sourceId", "source_id"]),
+            sourceName: pickString(entryRec, [
+              "sourceName",
+              "source_name",
+              "source",
+            ]),
+            postedAt,
+            rawText: pickString(entryRec, [
+              "rawText",
+              "raw_text",
+              "postedAtText",
+              "text",
+            ]),
+          });
+        }
+      }
+    }
+  }
+
+  if (!summary && entries.length === 0) return null;
+  return { summary, entries };
+}
+
+export function normalizeCompensationOverride(
+  raw: unknown
+): CompensationOverrideItem | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  const minAmount = pickNumber(rec, ["minAmount", "min_amount", "min"]);
+  const maxAmount = pickNumber(rec, ["maxAmount", "max_amount", "max"]);
+  const currency = pickString(rec, ["currency"]);
+  const rawPeriod = pickString(rec, ["period"]);
+  const note = pickString(rec, ["note"]);
+
+  if (minAmount === null && maxAmount === null && !currency && !note) {
+    return null;
+  }
+
+  return {
+    id: pickString(rec, ["id"]),
+    minAmount,
+    maxAmount,
+    currency,
+    period: isSalaryPeriod(rawPeriod) ? rawPeriod : null,
+    provenance: pickString(rec, ["provenance"]) ?? "user_supplied",
+    note,
+    updatedAt: pickString(rec, ["updatedAt", "updated_at"]),
+  };
+}
+
+export function normalizeJobSourceRecord(raw: unknown): JobSourceRecordItem | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  const id = pickString(rec, ["id"]);
+  const jobId = pickString(rec, ["jobId", "job_id"]) ?? "";
+  const sourceId = pickString(rec, ["sourceId", "source_id"]) ?? "";
+  if (!id) return null;
+
+  const rawStatus = pickString(rec, ["recordStatus", "record_status"]);
+  const recordStatus: JobSourceRecordItem["recordStatus"] =
+    rawStatus === "possibly_closed" || rawStatus === "closed"
+      ? rawStatus
+      : "open";
+
+  return {
+    id,
+    jobId,
+    sourceId,
+    sourceName: pickString(rec, [
+      "sourceName",
+      "source_name",
+      "sourceDisplayName",
+      "displayName",
+    ]),
+    sourceType: pickString(rec, ["sourceType", "source_type"]),
+    externalId: pickString(rec, ["externalId", "external_id"]) ?? id,
+    sourceUrl: pickString(rec, ["sourceUrl", "source_url"]),
+    applyUrl: pickString(rec, ["applyUrl", "apply_url"]),
+    sourcePostedAtText: pickString(rec, [
+      "sourcePostedAtText",
+      "source_posted_at_text",
+    ]),
+    sourcePostedAt: pickString(rec, ["sourcePostedAt", "source_posted_at"]),
+    sourceUpdatedAt: pickString(rec, ["sourceUpdatedAt", "source_updated_at"]),
+    firstSeenAt: pickString(rec, ["firstSeenAt", "first_seen_at"]) ?? "",
+    lastSeenAt: pickString(rec, ["lastSeenAt", "last_seen_at"]) ?? "",
+    missingRunCount:
+      pickNumber(rec, ["missingRunCount", "missing_run_count"]) ?? 0,
+    recordStatus,
+  };
+}
+
+export function normalizeJobListItem(raw: unknown): JobListItem | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+
+  const id = pickString(rec, ["id"]);
+  if (!id) return null;
+
+  const rawWorkplace = pickString(rec, ["workplaceType", "workplace_type"]);
+  const rawStatus = pickString(rec, ["status"]);
+  const rawPeriod = pickString(rec, ["salaryPeriod", "salary_period"]);
+  const rawSalarySource = pickString(rec, [
+    "salarySourceType",
+    "salary_source_type",
+  ]);
+  const rawUserState = pickString(rec, [
+    "userState",
+    "user_state",
+    "discoveryState",
+    "discovery_state",
+  ]);
+
+  const compensationOverride = normalizeCompensationOverride(
+    rec.compensationOverride ?? rec.compensation_override
+  );
+
+  const salaryMin = pickNumber(rec, ["salaryMin", "salary_min"]);
+  const salaryMax = pickNumber(rec, ["salaryMax", "salary_max"]);
+  let salarySourceType: SalaryProvenance = "unknown";
+  if (rawSalarySource === "employer_disclosed") {
+    salarySourceType = "employer_disclosed";
+  } else if (rawSalarySource === "user_supplied") {
+    salarySourceType = "user_supplied";
+  } else if (salaryMin !== null || salaryMax !== null) {
+    salarySourceType = "employer_disclosed";
+  } else if (compensationOverride) {
+    salarySourceType = "user_supplied";
+  }
+
+  const dupCount =
+    pickNumber(rec, [
+      "duplicateCandidateCount",
+      "duplicate_candidate_count",
+      "proposedDuplicatesCount",
+    ]) ?? 0;
+
+  const matchRec = asRecord(rec.match) ?? asRecord(rec.latestMatch);
+
+  return {
+    id,
+    companyId: pickString(rec, ["companyId", "company_id"]),
+    companyName:
+      pickString(rec, ["companyName", "company_name"]) ?? "Unknown company",
+    primarySourceId: pickString(rec, ["primarySourceId", "primary_source_id"]),
+    primarySourceName: pickString(rec, [
+      "primarySourceName",
+      "primary_source_name",
+      "sourceName",
+    ]),
+    primarySourceType: pickString(rec, [
+      "primarySourceType",
+      "primary_source_type",
+      "sourceType",
+    ]),
+    title: pickString(rec, ["title"]) ?? "Untitled role",
+    descriptionSnippet: pickString(rec, [
+      "descriptionSnippet",
+      "description_snippet",
+      "snippet",
+    ]),
+    locationText: pickString(rec, ["locationText", "location_text", "location"]),
+    countryCode: pickString(rec, ["countryCode", "country_code"]),
+    workplaceType: isWorkplaceType(rawWorkplace) ? rawWorkplace : "unspecified",
+    employmentType: pickString(rec, ["employmentType", "employment_type"]),
+    seniorityLevel: pickString(rec, ["seniorityLevel", "seniority_level"]),
+    seniorityMinYears: pickNumber(rec, [
+      "seniorityMinYears",
+      "seniority_min_years",
+    ]),
+    seniorityMaxYears: pickNumber(rec, [
+      "seniorityMaxYears",
+      "seniority_max_years",
+    ]),
+    salaryMin,
+    salaryMax,
+    salaryCurrency: pickString(rec, ["salaryCurrency", "salary_currency"]),
+    salaryPeriod: isSalaryPeriod(rawPeriod) ? rawPeriod : null,
+    salarySourceType,
+    compensationOverride,
+    employerPostedAt: pickString(rec, ["employerPostedAt", "employer_posted_at"]),
+    dateConflict: normalizeDateConflict(
+      rec.dateConflict ?? rec.dateConflictJson ?? rec.date_conflict_json
+    ),
+    sourceUpdatedAt: pickString(rec, ["sourceUpdatedAt", "source_updated_at"]),
+    firstSeenAt: pickString(rec, ["firstSeenAt", "first_seen_at"]) ?? "",
+    lastSeenAt: pickString(rec, ["lastSeenAt", "last_seen_at"]) ?? "",
+    lastVerifiedAt: pickString(rec, ["lastVerifiedAt", "last_verified_at"]) ?? "",
+    status: isJobStatus(rawStatus) ? rawStatus : "unknown",
+    canonicalUrl: pickString(rec, ["canonicalUrl", "canonical_url"]),
+    applyUrl: pickString(rec, ["applyUrl", "apply_url"]),
+    mergedIntoJobId: pickString(rec, ["mergedIntoJobId", "merged_into_job_id"]),
+    userState: isUserState(rawUserState) ? rawUserState : null,
+    userStateNotes: pickString(rec, ["userStateNotes", "user_state_notes", "notes"]),
+    documentedFitScore:
+      pickNumber(rec, ["documentedFitScore", "documented_fit_score"]) ??
+      (matchRec
+        ? pickNumber(matchRec, ["documentedFitScore", "documented_fit_score"])
+        : null),
+    priorityScore:
+      pickNumber(rec, ["priorityScore", "priority_score"]) ??
+      (matchRec ? pickNumber(matchRec, ["priorityScore", "priority_score"]) : null),
+    sourceCount: pickNumber(rec, ["sourceCount", "source_count"]) ?? 1,
+    duplicateCandidateCount: dupCount,
+    hasDuplicateCandidates:
+      Boolean(rec.hasDuplicateCandidates) || dupCount > 0,
+  };
+}
+
+function normalizeDuplicateJobSummary(raw: unknown): DuplicateJobSummary | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  const id = pickString(rec, ["id"]);
+  if (!id) return null;
+  const rawWorkplace = pickString(rec, ["workplaceType", "workplace_type"]);
+  const rawStatus = pickString(rec, ["status"]);
+  const sourceNames = Array.isArray(rec.sourceNames)
+    ? rec.sourceNames.filter((s): s is string => typeof s === "string")
+    : [];
+
+  return {
+    id,
+    title: pickString(rec, ["title"]) ?? "Untitled role",
+    companyName:
+      pickString(rec, ["companyName", "company_name"]) ?? "Unknown company",
+    locationText: pickString(rec, ["locationText", "location_text"]),
+    workplaceType: isWorkplaceType(rawWorkplace) ? rawWorkplace : "unspecified",
+    employmentType: pickString(rec, ["employmentType", "employment_type"]),
+    canonicalUrl: pickString(rec, ["canonicalUrl", "canonical_url"]),
+    applyUrl: pickString(rec, ["applyUrl", "apply_url"]),
+    employerPostedAt: pickString(rec, ["employerPostedAt", "employer_posted_at"]),
+    firstSeenAt: pickString(rec, ["firstSeenAt", "first_seen_at"]) ?? "",
+    status: isJobStatus(rawStatus) ? rawStatus : "unknown",
+    sourceNames,
+  };
+}
+
+export function normalizeDuplicateCandidate(
+  raw: unknown
+): DuplicateCandidateItem | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  const id = pickString(rec, ["id"]);
+  const jobAId = pickString(rec, ["jobAId", "job_a_id"]);
+  const jobBId = pickString(rec, ["jobBId", "job_b_id"]);
+  if (!id || !jobAId || !jobBId) return null;
+
+  const rawEvidence = parseJsonField(rec.evidence ?? rec.evidenceJson ?? rec.evidence_json);
+  const evidence = asRecord(rawEvidence) ?? {};
+  const rawState = pickString(rec, ["state"]);
+  const state: DuplicateCandidateItem["state"] =
+    rawState === "dismissed" || rawState === "merged" ? rawState : "proposed";
+
+  return {
+    id,
+    jobAId,
+    jobBId,
+    matchMethod:
+      pickString(rec, ["matchMethod", "match_method"]) ?? "similarity",
+    evidence,
+    similarityScore:
+      pickNumber(rec, ["similarityScore", "similarity_score"]) ?? 0,
+    state,
+    createdAt: pickString(rec, ["createdAt", "created_at"]) ?? "",
+    dismissedAt: pickString(rec, ["dismissedAt", "dismissed_at"]),
+    resolvedAt: pickString(rec, ["resolvedAt", "resolved_at"]),
+    jobA: normalizeDuplicateJobSummary(rec.jobA ?? rec.job_a),
+    jobB: normalizeDuplicateJobSummary(rec.jobB ?? rec.job_b),
+  };
+}
+
+export function normalizeJobDetailItem(raw: unknown): JobDetailItem | null {
+  const root = asRecord(raw);
+  if (!root) return null;
+
+  const jobRec = asRecord(root.job) ?? root;
+  const base = normalizeJobListItem(jobRec);
+  if (!base) return null;
+
+  const rootUserJobState = asRecord(root.userJobState);
+  const rootUserStateVal = rootUserJobState
+    ? pickString(rootUserJobState, ["discoveryState", "discovery_state"])
+    : null;
+  const resolvedUserState: UserJobDiscoveryState | null = isUserState(
+    rootUserStateVal
+  )
+    ? rootUserStateVal
+    : base.userState;
+
+  const rootCompensationOverride = normalizeCompensationOverride(
+    root.compensationOverride ?? root.compensation_override
+  );
+  const resolvedCompensationOverride =
+    rootCompensationOverride ?? base.compensationOverride;
+
+  const rootMatch = asRecord(root.latestMatch) ?? asRecord(root.match);
+  const resolvedFitScore =
+    base.documentedFitScore ??
+    (rootMatch
+      ? pickNumber(rootMatch, ["documentedFitScore", "documented_fit_score"])
+      : null);
+  const resolvedPriorityScore =
+    base.priorityScore ??
+    (rootMatch ? pickNumber(rootMatch, ["priorityScore", "priority_score"]) : null);
+
+  const rawSourceRecords = Array.isArray(root.jobSourceRecords)
+    ? root.jobSourceRecords
+    : Array.isArray(root.sourceRecords)
+      ? root.sourceRecords
+      : Array.isArray(jobRec.sourceRecords)
+        ? jobRec.sourceRecords
+        : Array.isArray(jobRec.source_records)
+          ? jobRec.source_records
+          : [];
+
+  const sourceRecords = rawSourceRecords
+    .map(normalizeJobSourceRecord)
+    .filter((r): r is JobSourceRecordItem => r !== null);
+
+  const rawDuplicates = Array.isArray(root.duplicateCandidates)
+    ? root.duplicateCandidates
+    : Array.isArray(jobRec.duplicateCandidates)
+      ? jobRec.duplicateCandidates
+      : [];
+
+  const duplicateCandidates = rawDuplicates
+    .map(normalizeDuplicateCandidate)
+    .filter((d): d is DuplicateCandidateItem => d !== null);
+
+  const rawReqs = Array.isArray(root.requirements)
+    ? root.requirements
+    : Array.isArray(jobRec.requirements)
+      ? jobRec.requirements
+      : [];
+  const requirements: JobRequirementSummary[] = rawReqs
+    .map((item) => {
+      const r = asRecord(item);
+      if (!r) return null;
+      const reqId = pickString(r, ["id"]);
+      const requirementText = pickString(r, [
+        "requirementText",
+        "requirement_text",
+      ]);
+      if (!reqId || !requirementText) return null;
+      return {
+        id: reqId,
+        requirementText,
+        category: pickString(r, ["category"]) ?? "other",
+        priority: pickString(r, ["priority"]) ?? "unspecified",
+        machineSupportState:
+          pickString(r, ["machineSupportState", "machine_support_state"]) ??
+          "not_found_in_profile",
+        candidateResponse:
+          pickString(r, ["candidateResponse", "candidate_response"]) ??
+          "not_reviewed",
+      };
+    })
+    .filter((r): r is JobRequirementSummary => r !== null);
+
+  const rootApp = asRecord(root.application);
+
+  return {
+    ...base,
+    userState: resolvedUserState,
+    userStateNotes:
+      (rootUserJobState
+        ? pickString(rootUserJobState, ["notes"])
+        : null) ?? base.userStateNotes,
+    compensationOverride: resolvedCompensationOverride,
+    salarySourceType:
+      base.salaryMin !== null || base.salaryMax !== null
+        ? base.salarySourceType
+        : resolvedCompensationOverride
+          ? "user_supplied"
+          : base.salarySourceType,
+    documentedFitScore: resolvedFitScore,
+    priorityScore: resolvedPriorityScore,
+    duplicateCandidateCount: Math.max(
+      base.duplicateCandidateCount,
+      duplicateCandidates.length
+    ),
+    hasDuplicateCandidates:
+      base.hasDuplicateCandidates || duplicateCandidates.length > 0,
+    descriptionText:
+      pickString(jobRec, ["descriptionText", "description_text"]) ?? "",
+    descriptionHtmlSanitized: pickString(jobRec, [
+      "descriptionHtmlSanitized",
+      "description_html_sanitized",
+    ]),
+    sourceRecords,
+    duplicateCandidates,
+    requirements,
+    applicationId:
+      pickString(jobRec, ["applicationId", "application_id"]) ??
+      pickString(root, ["applicationId"]) ??
+      (rootApp ? pickString(rootApp, ["id"]) : null),
+  };
+}
+
+export function computeFreshness(employerPostedAt: string | null): {
+  label: FreshnessLabel;
+  tone: "accent" | "neutral" | "warning";
+} {
+  if (!employerPostedAt) {
+    return { label: "Date unknown", tone: "neutral" };
+  }
+  const parsed = new Date(employerPostedAt);
+  if (Number.isNaN(parsed.getTime())) {
+    return { label: "Date unknown", tone: "neutral" };
+  }
+  const ageHours = (Date.now() - parsed.getTime()) / (1000 * 60 * 60);
+  if (ageHours < 24) {
+    return { label: "Very recent", tone: "accent" };
+  }
+  if (ageHours <= 72) {
+    return { label: "Recent", tone: "accent" };
+  }
+  if (ageHours <= 24 * 7) {
+    return { label: "This week", tone: "neutral" };
+  }
+  return { label: "Older", tone: "neutral" };
+}
+
+export function formatShortDate(iso: string | null): string {
+  if (!iso) return "Unknown";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return "Unknown";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatSalaryRange(
+  min: number | null,
+  max: number | null,
+  currency: string | null,
+  period: SalaryPeriod | null
+): string | null {
+  if (min === null && max === null) return null;
+  const curr = currency?.trim() || "";
+  const formatNum = (n: number) => {
+    try {
+      if (curr && curr.length === 3) {
+        return new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency: curr.toUpperCase(),
+          maximumFractionDigits: 0,
+        }).format(n);
+      }
+    } catch {
+      // Fallback to plain tabular formatting
+    }
+    return `${curr ? `${curr} ` : ""}${n.toLocaleString()}`;
+  };
+
+  let rangeText = "";
+  if (min !== null && max !== null && min !== max) {
+    rangeText = `${formatNum(min)} – ${formatNum(max)}`;
+  } else {
+    const single = min ?? max;
+    rangeText = single !== null ? formatNum(single) : "";
+  }
+
+  if (!rangeText) return null;
+  if (period && period !== "unknown") {
+    return `${rangeText} / ${period}`;
+  }
+  return rangeText;
+}
+
+export function formatWorkplaceLabel(type: WorkplaceType): string {
+  switch (type) {
+    case "remote":
+      return "Remote";
+    case "hybrid":
+      return "Hybrid";
+    case "onsite":
+      return "Onsite";
+    case "unspecified":
+      return "Workplace unspecified";
+  }
+}
+
+export function isSafeExternalHttpUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}

@@ -32,6 +32,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/components/ui/cn";
 import { useSse } from "@/components/shell/sse-provider";
+import { SourcesManager } from "@/features/job-sources/sources-manager";
 
 export type AiProviderPreset =
   | "none"
@@ -810,8 +811,9 @@ export function SettingsWorkbench() {
       ) : null}
 
       <Tabs defaultValue="ai" indicatorId="settings-tabs">
-        <TabsList aria-label="Settings sections">
+        <TabsList aria-label="Settings sections" className="overflow-x-auto">
           <TabsTrigger value="ai">AI Provider (CLI-first)</TabsTrigger>
+          <TabsTrigger value="sources">Job Sources</TabsTrigger>
           <TabsTrigger value="defaults">Resume Defaults &amp; Backups</TabsTrigger>
           <TabsTrigger value="diagnostics">Diagnostics &amp; Recent Tasks</TabsTrigger>
         </TabsList>
@@ -1611,6 +1613,10 @@ export function SettingsWorkbench() {
               </div>
             )}
           </section>
+        </TabsContent>
+        {/* 4) Job Sources */}
+        <TabsContent value="sources">
+          <SourcesManager />
         </TabsContent>
       </Tabs>
     </div>

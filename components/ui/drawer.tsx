@@ -5,7 +5,23 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { X } from "lucide-react";
 import { cn } from "./cn";
 
-export const Drawer = DialogPrimitive.Root;
+const DrawerCloseContext = React.createContext<(() => void) | null>(null);
+
+export function Drawer({
+  onOpenChange,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
+  const close = React.useCallback(() => {
+    onOpenChange?.(false);
+  }, [onOpenChange]);
+
+  return (
+    <DrawerCloseContext.Provider value={close}>
+      <DialogPrimitive.Root onOpenChange={onOpenChange} {...props} />
+    </DrawerCloseContext.Provider>
+  );
+}
+
 export const DrawerTrigger = DialogPrimitive.Trigger;
 export const DrawerClose = DialogPrimitive.Close;
 
@@ -23,14 +39,23 @@ export const DrawerContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   DrawerContentProps
 >(function DrawerContent(
-  { className, children, side = "right", showCloseButton = true, ...props },
+  { className, children, side = "right", showCloseButton = true, onKeyDown, ...props },
   ref
 ) {
+  const closeDrawer = React.useContext(DrawerCloseContext);
+
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#22231F]/28 transition-opacity duration-150" />
       <DialogPrimitive.Content
         ref={ref}
+        onKeyDown={(e) => {
+          onKeyDown?.(e);
+          if (e.key === "Escape" && !e.defaultPrevented && closeDrawer) {
+            e.preventDefault();
+            closeDrawer();
+          }
+        }}
         className={cn(
           "fixed top-0 bottom-0 z-50 flex flex-col bg-[var(--surface-raised)] text-[var(--text-primary)]",
           "shadow-[0_6px_24px_rgba(34,35,31,0.10)] focus:outline-none",

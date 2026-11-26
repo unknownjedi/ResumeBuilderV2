@@ -18,7 +18,7 @@ test.describe("Slice 2 Career Profile & Resume Import", () => {
     await page.getByLabel(/Full name/i).fill("Taylor Morgan");
     await page.getByLabel(/Professional headline/i).fill("Staff Backend Engineer");
     await page.getByRole("button", { name: /Save contact & summary/i }).click();
-    await expect(page.getByText(/Contact & headline saved/i)).toBeVisible();
+    await expect(page.getByText("Contact & headline saved", { exact: true })).toBeVisible();
 
     // Reload and verify persistence
     await page.reload();
