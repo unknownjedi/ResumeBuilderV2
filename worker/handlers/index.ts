@@ -8,11 +8,16 @@ import {
   type AnalyzeJobMode,
 } from "../../server/ai/workflows/analyze-job";
 import {
+  MaterialsGenerationError,
+  type MaterialGenerationMode,
+} from "../../server/ai/workflows/generate-materials";
+import {
   ConnectorError,
   getConnectorForSourceType,
   type NormalizedJob,
 } from "../../server/connectors/index";
 import type { SqliteDatabase } from "../../server/db/client";
+import { EXPORT_FORMATS, type ExportFormat } from "../../server/db/schema/applications";
 import * as schema from "../../server/db/schema/index";
 import {
   jobSources,
@@ -20,10 +25,17 @@ import {
   type SourceHealthState,
 } from "../../server/db/schema/jobs";
 import type { TaskResourceType } from "../../server/db/schema/system";
+import { PdfBrowserMissingError } from "../../server/documents/resume-renderer";
 import { emitTaskEvent } from "../../server/events/task-events";
 import { logger } from "../../server/logging/logger";
 import type { BackgroundTask } from "../../server/queue/task-queue";
 import { SsrfError } from "../../server/security/ssrf";
+import {
+  ApplicationServiceError,
+  exportCoverLetter,
+  generateAndSaveApplicationAnswers,
+  generateAndSaveCoverLetter,
+} from "../../server/services/applications";
 import {
   ingestSourceBatch,
   runJobDeduplicationPass,
@@ -35,6 +47,11 @@ import {
   recomputeMatchesForJob,
   recomputeMatchesForSearchProfile,
 } from "../../server/services/matching";
+import {
+  createOrTailorResumeDraft,
+  exportResumeDocument,
+  ResumeServiceError,
+} from "../../server/services/resumes";
 import {
   buildSourceConfigFromRow,
   sanitizeSourceErrorText,
@@ -125,6 +142,29 @@ interface JobAnalyzePayload {
 interface JobMatchPayload {
   jobId?: string;
   searchProfileId?: string;
+}
+
+interface ResumeGeneratePayload {
+  jobId?: string;
+  searchProfileId?: string;
+  applicationId?: string;
+  mode?: string;
+  regenerate?: boolean;
+  materialType?: "resume" | "cover_letter" | "application_answers";
+  tone?: string;
+  length?: "short" | "medium" | "long" | "detailed";
+  prompts?: Array<{ promptKey: string; promptText: string }>;
+  promptKeys?: string[];
+  customPrompt?: string;
+}
+
+interface DocumentExportPayload {
+  documentType?: "resume" | "cover_letter";
+  resumeDraftId?: string;
+  versionId?: string;
+  coverLetterId?: string;
+  format?: string;
+  paperSize?: "A4" | "Letter";
 }
 
 const MAX_FETCH_PAGES = 50;
@@ -1189,7 +1229,309 @@ export async function handleJobMatch(
 }
 
 /**
- * Builds the task handler registry for Slice 1–4 and future custom handlers.
+ * Generates job-specific resume drafts, cover letters, or application answer drafts.
+ */
+export async function handleResumeGenerate(
+  ctx: TaskHandlerContext
+): Promise<TaskHandlerResult> {
+  const payload = parseJsonPayload<ResumeGeneratePayload>(ctx.task.payloadJson);
+  const jobId =
+    typeof payload?.jobId === "string" && payload.jobId.trim().length > 0
+      ? payload.jobId.trim()
+      : undefined;
+
+  if (!jobId) {
+    throw new NonRetryableTaskError(
+      "INVALID_PAYLOAD",
+      "resume.generate requires jobId."
+    );
+  }
+
+  const searchProfileId =
+    typeof payload?.searchProfileId === "string" &&
+    payload.searchProfileId.trim().length > 0
+      ? payload.searchProfileId.trim()
+      : undefined;
+
+  const mode: MaterialGenerationMode =
+    payload?.mode === "ai_required" ||
+    payload?.mode === "deterministic" ||
+    payload?.mode === "auto_or_ai"
+      ? payload.mode
+      : "auto_or_ai";
+
+  const materialType = payload?.materialType ?? "resume";
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  ctx.reportProgress({
+    stage: "generating",
+    percent: 25,
+    resourceType: materialType === "resume" ? "resume" : "application",
+    resourceId: null,
+  });
+
+  const db = drizzle(ctx.sqlite, { schema });
+  let resourceType: TaskResourceType = "resume";
+  let resourceId: string | null = null;
+  let resultSummary: Record<string, unknown> = {};
+
+  try {
+    if (materialType === "cover_letter") {
+      const detail = await generateAndSaveCoverLetter({
+        jobId,
+        searchProfileId,
+        applicationId: payload?.applicationId,
+        mode,
+        tone: payload?.tone,
+        length: payload?.length,
+        regenerate: Boolean(payload?.regenerate),
+        taskId: ctx.task.id,
+        db,
+      });
+      resourceType = "application";
+      resourceId = detail.applicationId ?? detail.id;
+      resultSummary = {
+        materialType: "cover_letter",
+        coverLetterId: detail.id,
+        jobId: detail.jobId,
+        searchProfileId: detail.searchProfileId,
+      };
+    } else if (materialType === "application_answers") {
+      const res = await generateAndSaveApplicationAnswers({
+        jobId,
+        searchProfileId,
+        applicationId: payload?.applicationId,
+        prompts: payload?.prompts,
+        promptKeys: payload?.promptKeys,
+        customPrompt: payload?.customPrompt,
+        mode,
+        regenerate: Boolean(payload?.regenerate),
+        taskId: ctx.task.id,
+        db,
+      });
+      resourceType = "application";
+      resourceId = res.items[0]?.applicationId ?? null;
+      resultSummary = {
+        materialType: "application_answers",
+        count: res.items.length,
+        answerIds: res.items.map((a) => a.id),
+      };
+    } else {
+      const detail = await createOrTailorResumeDraft({
+        jobId,
+        searchProfileId,
+        mode,
+        regenerate: Boolean(payload?.regenerate),
+        taskId: ctx.task.id,
+        db,
+      });
+      resourceType = "resume";
+      resourceId = detail.id;
+      resultSummary = {
+        materialType: "resume",
+        resumeDraftId: detail.id,
+        jobId: detail.jobId,
+        searchProfileId: detail.searchProfileId,
+        claimsCount: detail.claimsCount,
+      };
+    }
+  } catch (err) {
+    if (
+      err instanceof ResumeServiceError ||
+      err instanceof ApplicationServiceError ||
+      err instanceof MaterialsGenerationError
+    ) {
+      if (err.status >= 400 && err.status < 500) {
+        throw new NonRetryableTaskError(err.code, err.message);
+      }
+    }
+    if (err instanceof AiProviderError && !err.retryable) {
+      throw new NonRetryableTaskError(err.code, err.message);
+    }
+    throw err;
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const nowIso = new Date().toISOString();
+  ctx.sqlite
+    .transaction(() => {
+      emitResourceUpdatedSync(
+        ctx.sqlite,
+        ctx.task,
+        resourceType,
+        resourceId,
+        nowIso
+      );
+    })
+    .immediate();
+
+  ctx.reportProgress({
+    stage: "completed",
+    percent: 100,
+    resourceType,
+    resourceId,
+  });
+
+  return {
+    resourceType,
+    resourceId,
+    resultSummary,
+  };
+}
+
+/**
+ * Exports a resume version or cover letter to DOCX, PDF, TXT, or Markdown.
+ */
+export async function handleDocumentExport(
+  ctx: TaskHandlerContext
+): Promise<TaskHandlerResult> {
+  const payload = parseJsonPayload<DocumentExportPayload>(ctx.task.payloadJson);
+  const documentType =
+    payload?.documentType === "cover_letter" ? "cover_letter" : "resume";
+  const format = payload?.format;
+
+  if (!format || !EXPORT_FORMATS.includes(format as ExportFormat)) {
+    throw new NonRetryableTaskError(
+      "INVALID_PAYLOAD",
+      "document.export requires format to be one of docx, pdf, txt, or md."
+    );
+  }
+
+  const typedFormat = format as ExportFormat;
+  const resumeDraftId =
+    typeof payload?.resumeDraftId === "string" &&
+    payload.resumeDraftId.trim().length > 0
+      ? payload.resumeDraftId.trim()
+      : undefined;
+  const coverLetterId =
+    typeof payload?.coverLetterId === "string" &&
+    payload.coverLetterId.trim().length > 0
+      ? payload.coverLetterId.trim()
+      : undefined;
+
+  if (documentType === "resume" && !resumeDraftId) {
+    throw new NonRetryableTaskError(
+      "INVALID_PAYLOAD",
+      "document.export requires resumeDraftId for resume exports."
+    );
+  }
+  if (documentType === "cover_letter" && !coverLetterId) {
+    throw new NonRetryableTaskError(
+      "INVALID_PAYLOAD",
+      "document.export requires coverLetterId for cover letter exports."
+    );
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const targetResourceType: TaskResourceType =
+    documentType === "cover_letter" ? "application" : "resume";
+  const targetResourceId =
+    documentType === "cover_letter" ? coverLetterId ?? null : resumeDraftId ?? null;
+
+  ctx.reportProgress({
+    stage: "exporting",
+    percent: 30,
+    resourceType: targetResourceType,
+    resourceId: targetResourceId,
+  });
+
+  const db = drizzle(ctx.sqlite, { schema });
+  let resultSummary: Record<string, unknown>;
+
+  try {
+    if (documentType === "cover_letter") {
+      const exported = await exportCoverLetter({
+        coverLetterId: coverLetterId!,
+        format: typedFormat,
+        paperSize: payload?.paperSize,
+        db,
+      });
+      resultSummary = {
+        documentType: "cover_letter",
+        exportId: exported.exportRecord.id,
+        coverLetterId: exported.coverLetter.id,
+        format: exported.exportRecord.format,
+        fileHash: exported.exportRecord.fileHash,
+        fileSizeBytes: exported.exportRecord.fileSizeBytes,
+        downloadUrl: exported.downloadUrl,
+      };
+    } else {
+      const exported = await exportResumeDocument({
+        resumeDraftId: resumeDraftId!,
+        format: typedFormat,
+        versionId: payload?.versionId,
+        paperSize: payload?.paperSize,
+        db,
+      });
+      resultSummary = {
+        documentType: "resume",
+        exportId: exported.exportRecord.id,
+        resumeDraftId: resumeDraftId!,
+        versionId: exported.version.id,
+        versionNumber: exported.version.versionNumber,
+        format: exported.exportRecord.format,
+        fileHash: exported.exportRecord.fileHash,
+        fileSizeBytes: exported.exportRecord.fileSizeBytes,
+        downloadUrl: exported.downloadUrl,
+      };
+    }
+  } catch (err) {
+    if (err instanceof PdfBrowserMissingError) {
+      throw new NonRetryableTaskError(err.code, err.message);
+    }
+    if (
+      err instanceof ResumeServiceError ||
+      err instanceof ApplicationServiceError
+    ) {
+      if (err.status >= 400 && err.status < 500) {
+        throw new NonRetryableTaskError(err.code, err.message);
+      }
+    }
+    throw err;
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const nowIso = new Date().toISOString();
+  ctx.sqlite
+    .transaction(() => {
+      emitResourceUpdatedSync(
+        ctx.sqlite,
+        ctx.task,
+        targetResourceType,
+        targetResourceId,
+        nowIso
+      );
+    })
+    .immediate();
+
+  ctx.reportProgress({
+    stage: "completed",
+    percent: 100,
+    resourceType: targetResourceType,
+    resourceId: targetResourceId,
+  });
+
+  return {
+    resourceType: targetResourceType,
+    resourceId: targetResourceId,
+    resultSummary,
+  };
+}
+
+/**
+ * Builds the task handler registry for Slice 1–5 and future custom handlers.
  */
 export function createTaskHandlerRegistry(
   customHandlers?: Record<string, TaskHandler>
@@ -1202,6 +1544,8 @@ export function createTaskHandlerRegistry(
   registry.set("job.deduplicate", handleJobDeduplicate);
   registry.set("job.analyze", handleJobAnalyze);
   registry.set("job.match", handleJobMatch);
+  registry.set("resume.generate", handleResumeGenerate);
+  registry.set("document.export", handleDocumentExport);
 
   if (customHandlers) {
     for (const [taskType, handler] of Object.entries(customHandlers)) {

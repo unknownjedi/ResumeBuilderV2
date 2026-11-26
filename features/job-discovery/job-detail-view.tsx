@@ -2,15 +2,18 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ArrowUpRight,
   Bookmark,
   BookmarkCheck,
+  Briefcase,
   Building2,
   CheckCircle2,
   Clock,
   ExternalLink,
+  FileText,
   GitMerge,
   HelpCircle,
   Link2,
@@ -19,6 +22,7 @@ import {
   Pencil,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   XCircle,
@@ -47,6 +51,10 @@ import {
   createProfileEntity,
   getCareerProfile,
 } from "@/features/career-profile/api";
+import { createOrEnsureApplication } from "@/features/applications/api";
+import { ConfirmAppliedDialog } from "@/features/applications/confirm-applied-dialog";
+import type { ApplicationRecord } from "@/features/applications/types";
+import { tailorResumeForJob } from "@/features/resume-builder/api";
 import {
   analyzeJob,
   deleteCompensationOverride,
@@ -257,6 +265,7 @@ export function JobDetailView({
   onReviewDuplicates,
   onJobUpdated,
 }: JobDetailViewProps) {
+  const router = useRouter();
   const { toast } = useToast();
   const { subscribe } = useSse();
   const { activeProfileId, searchProfiles } = useWorkspace();
@@ -285,6 +294,14 @@ export function JobDetailView({
   const [analyzing, setAnalyzing] = React.useState(false);
   const [matching, setMatching] = React.useState(false);
   const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
+
+  // Resume & Application workflow actions
+  const [tailoringResume, setTailoringResume] = React.useState(false);
+  const [preparingApplication, setPreparingApplication] = React.useState(false);
+  const [openingAppliedModal, setOpeningAppliedModal] = React.useState(false);
+  const [activeApplication, setActiveApplication] =
+    React.useState<ApplicationRecord | null>(null);
+  const [confirmAppliedOpen, setConfirmAppliedOpen] = React.useState(false);
 
   // Compensation Override editor state
   const [compEditing, setCompEditing] = React.useState(false);
@@ -716,6 +733,76 @@ export function JobDetailView({
   const safeApplyUrl =
     isSafeExternalHttpUrl(job.applyUrl) ??
     isSafeExternalHttpUrl(job.canonicalUrl);
+
+  const handleTailorResume = async () => {
+    setTailoringResume(true);
+    try {
+      const draft = await tailorResumeForJob(job.id, {
+        searchProfileId: activeProfileId ?? undefined,
+      });
+      toast({
+        title: "Tailored resume draft ready",
+        description: "Opening Resume Tailoring Studio.",
+        tone: "accent",
+      });
+      router.push(`/resumes/${encodeURIComponent(draft.id)}`);
+    } catch (err) {
+      toast({
+        title: "Could not tailor resume",
+        description: err instanceof Error ? err.message : "Request failed.",
+        tone: "danger",
+      });
+    } finally {
+      setTailoringResume(false);
+    }
+  };
+
+  const handlePrepareApplication = async () => {
+    setPreparingApplication(true);
+    try {
+      const app = await createOrEnsureApplication({
+        jobId: job.id,
+        searchProfileId: activeProfileId ?? undefined,
+        originalApplyUrl: safeApplyUrl ?? null,
+      });
+      setActiveApplication(app);
+      toast({
+        title: "Application workspace ready",
+        description: `${job.title} at ${job.companyName}`,
+        tone: "accent",
+      });
+      router.push(`/applications?applicationId=${encodeURIComponent(app.id)}`);
+    } catch (err) {
+      toast({
+        title: "Could not prepare application",
+        description: err instanceof Error ? err.message : "Request failed.",
+        tone: "danger",
+      });
+    } finally {
+      setPreparingApplication(false);
+    }
+  };
+
+  const handleOpenMarkApplied = async () => {
+    setOpeningAppliedModal(true);
+    try {
+      const app = await createOrEnsureApplication({
+        jobId: job.id,
+        searchProfileId: activeProfileId ?? undefined,
+        originalApplyUrl: safeApplyUrl ?? null,
+      });
+      setActiveApplication(app);
+      setConfirmAppliedOpen(true);
+    } catch (err) {
+      toast({
+        title: "Could not open submission confirmation",
+        description: err instanceof Error ? err.message : "Request failed.",
+        tone: "danger",
+      });
+    } finally {
+      setOpeningAppliedModal(false);
+    }
+  };
   const freshness = computeFreshness(job.employerPostedAt);
   const statusMeta = jobStatusBadge(job.status);
 
@@ -893,6 +980,39 @@ export function JobDetailView({
               Save job
             </Button>
           )}
+
+          <Button
+            variant="secondary"
+            size="md"
+            loading={tailoringResume}
+            disabled={pendingAction || tailoringResume}
+            onClick={() => void handleTailorResume()}
+          >
+            <FileText className="h-4 w-4" aria-hidden="true" />
+            Tailor resume
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="md"
+            loading={preparingApplication}
+            disabled={pendingAction || preparingApplication}
+            onClick={() => void handlePrepareApplication()}
+          >
+            <Briefcase className="h-4 w-4" aria-hidden="true" />
+            Prepare application
+          </Button>
+
+          <Button
+            variant="outline"
+            size="md"
+            loading={openingAppliedModal}
+            disabled={pendingAction || openingAppliedModal}
+            onClick={() => void handleOpenMarkApplied()}
+          >
+            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+            Mark as applied
+          </Button>
 
           {isDismissed ? (
             <Button
@@ -1948,6 +2068,16 @@ export function JobDetailView({
           </p>
         )}
       </section>
+
+      <ConfirmAppliedDialog
+        application={activeApplication}
+        open={confirmAppliedOpen}
+        onOpenChange={setConfirmAppliedOpen}
+        onConfirmed={(updated) => {
+          setActiveApplication(updated);
+          void refreshJob();
+        }}
+      />
     </div>
   );
 }
