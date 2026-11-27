@@ -17,6 +17,7 @@ V2 upgrades Personal Job Copilot from a single-pass resume tailor into an **ATS-
 5. **Theme-Matched Dual Update Studio (Manual Form + AI Instruction Form)** — Cohesive `#F5F4F0` / `#FBFAF7` / `#416653` split forms for structured manual editing (header, role metadata, bullets, Master Resume picker) and AI-guided refinement with **diff preview & cited Master Fact IDs** before applying.
 6. **True Generated PDF Preview Before Download (Resume & Cover Letter)** — Inspect the exact Playwright Chromium-rendered PDF page-by-page inside the UI (`pdfjs-dist` canvas preview + zoom + text-extractability audit) before saving/downloading `.pdf` or `.docx`.
 7. **High-Leverage Companion Capabilities** — Master Resume Bullet Variants, Keyword/Gap Highlight Overlay, One-Click Application Packet Export (`.zip`), Cover Letter Spotlight Studio, Smart Follow-Up Cadence, and Rejected-Fit Memory.
+8. **Active "Scan Now" Job Discovery & Daily Company Portal Promotion** — Clicking **Scan Now** triggers an active background worker discovery pass (`discovery.scan`) tailored to your Role Personas and `SDE2`/`SDE3`/`Senior SDE` filter, then resolves, deduplicates, and promotes clean company career portals (`Greenhouse`, `Lever`, `Ashby`, public JSON-LD/RSS career pages) into `job_sources` for automated daily (`1440m`) background scanning.
 
 ---
 
@@ -144,6 +145,7 @@ Any local coding or desktop agent (`Claude Desktop`, `Claude Code`, `Codex`, `Op
 | `list_personas` / `get_master_profile` | Read Role Personas (`AI Engineer`, `Full-Stack`, etc.) and **verified-only** Master Resume facts. | Excludes `rejected` / unverified sensitive legal data unless explicitly requested with flag. |
 | `list_search_profiles` | List search targets, seniority rules (`SDE2`/`SDE3`/`Senior SDE`), and ATS threshold settings. | Read-only safe metadata. |
 | `search_jobs` / `get_job_detail` | Query FTS5 job index with seniority/workplace/status filters and match evidence. | Read-only; canonicalizes merged jobs. |
+| `scan_related_jobs` | Trigger active `discovery.scan` for a Persona / Search Profile (`SDE2`/`SDE3`/`Senior SDE`) and promote clean company career portals to daily `job_sources`. | SSRF-validated public portals only; respects restricted-portal blocklist and `settings.discovery` caps. |
 | `import_job` | Manually ingest a JD (`title`, `company`, `descriptionText`, optional `applyUrl`). | Blocks automated LinkedIn/Naukri scraping; enforces `http:`/`https:` URL check. |
 | `analyze_job` / `compute_job_match` | Extract JD requirements, classify seniority, and score fit against Persona + Search Profile. | Respects daily AI budget cap; falls back deterministically. |
 | `tailor_resume` | Create/tailor a draft for `(jobId, personaId?, searchProfileId?)`, automatically running the ATS refinement loop up to `settings.ats.threshold`. | Strictly grounds every bullet in Master Resume (`validateStructuredResumeFactuality`); returns genuine mismatch report if below threshold. |
@@ -234,15 +236,43 @@ To ensure what the user sees on screen matches the downloaded `.pdf` pixel-for-p
 
 ---
 
+### 3.8 Active "Scan Now" Job Discovery & Daily Company Portal Promotion
+
+#### Goal
+Shift `job_sources` from a purely manual URL list into an active, self-growing pipeline: clicking **Scan Now** actively searches for related roles matching the user's active Role Personas, Search Profiles, and `SDE2` / `SDE3` / `Senior SDE` seniority filter, and automatically promotes clean discovered company career portals into `job_sources` for daily scheduled scanning.
+
+#### 1. Active Discovery Flow (`discovery.scan` Worker Task)
+1. **Trigger:** Clicking **Scan Now** (in **Overview** or **Discovery → Sources**) enqueues a `discovery.scan` background worker task (also exposed via MCP as `scan_related_jobs`).
+2. **Inputs:** Derived from selected Search Profiles + linked Role Personas (`career_personas`), including target role keywords (e.g., `AI Engineer`, `Full-Stack`, `Backend`, `Frontend`), `allowed_seniorities` (`SDE2`, `SDE3`, `Senior SDE`), preferred locations/remote rules, and excluded companies/keywords.
+3. **Safe Discovery Channels (Zero Anti-Bot Bypass):**
+   - **Public Aggregators & Open Feeds:** Structured JSON/RSS feeds (e.g., RemoteOK, Remotive, Hacker News hiring threads / public job APIs, configured public aggregators) that require no login, CAPTCHA, or anti-bot evasion.
+   - **Company-to-ATS-Board Resolver:** Extracts company names/domains from discovered listings (or user-provided company watchlists/seed lists) and resolves canonical public ATS boards (`boards-api.greenhouse.io/v1/boards/{slug}`, `api.lever.co/v0/postings/{slug}`, `api.ashbyhq.com/posting-api/job-board/{slug}`) or public JSON-LD/RSS `generic_career_page` endpoints.
+   - **Restricted-Portal Guardrail:** Automatically skips login-walled or scraping-prohibited hosts (`linkedin.com`, `naukri.com`, `indeed.com`, `glassdoor.com`, etc.) unless the user explicitly imports an individual job posting URL/text manually.
+4. **Live Progress & Filtering:** Streams step-by-step discovery counts over `/api/events` (SSE): queries run, raw listings inspected, seniority/excluded fits filtered out, new jobs persisted to `jobs`, and career portals discovered.
+
+#### 2. Automatic Company Career Portal Promotion into `job_sources`
+1. **Normalization & SSRF Validation:** Every discovered company portal URL passes `validateSafePublicUrl()` (public DNS + non-private IP checks) and normalizes to a canonical `(source_type, source_identifier / canonical_base_url)`.
+2. **Deduplication:** Matches against existing `job_sources` by `(source_type, source_identifier)` or normalized career host so repeat **Scan Now** runs never create duplicate sources.
+3. **Default Daily Cadence (`1440` Minutes):**
+   - Newly promoted sources are saved with `refresh_interval_minutes = 1440` (24-hour daily schedule), `origin = 'discovery_scan'`, and `discovered_via_scan_id` provenance so the existing `worker/scheduler.ts` (`30s` overdue-source check) automatically re-scans them every day.
+   - Users can immediately pause, edit interval, or remove any auto-added source from **Discovery → Sources** (filterable by `Auto-Discovered` vs `Manual`).
+4. **Safety & Promotion Controls (`settings.discovery`):**
+   - **Promotion Mode:** `auto_enable` (recommended default for verified Greenhouse/Lever/Ashby boards — immediately active on daily cadence) or `review_queue` (adds with `enabled = 0`, `approval_status = 'pending'` until approved in Sources UI).
+   - **Daily / Per-Scan Caps:** Configurable `maxNewSourcesPerScan` (default `15`) and `maxAutoSourcesTotal` (default `100`) to prevent unbounded background network growth.
+   - **Auto-Disable on Sustained Failures:** Discovered sources that fail HTTP validation cleanly `N` consecutive days (default `5`) automatically flip `enabled = 0` with an actionable error badge rather than retrying indefinitely.
+
+---
+
 ## 4. Updated Data Model & API Summary
 
 ### 4.1 New & Extended Tables (`server/db/schema/`)
-- **New tables:** `career_personas`, `career_persona_items`, `bullet_variants`, `ats_evaluations`, `mcp_tool_runs`, `application_followups`
+- **New tables:** `career_personas`, `career_persona_items`, `bullet_variants`, `ats_evaluations`, `mcp_tool_runs`, `application_followups`, `discovery_scans`
 - **Extended columns (additive migrations on existing v1.4 SQLite DBs):**
   - `search_profiles`: `persona_id`, `allowed_seniorities_json`, `seniority_hard_filter`, `treat_unspecified_seniority_as`, `experience_min_years`, `experience_max_years`, `experience_hard_filter`
-  - `jobs`: `detected_seniority`, `detected_min_years`, `detected_max_years`
+  - `job_sources`: `origin` (`manual` | `discovery_scan`), `discovered_via_scan_id`, `approval_status` (`approved` | `pending` | `rejected`), `consecutive_failures`
+  - `jobs`: `detected_seniority`, `detected_min_years`, `detected_max_years`, `discovery_scan_id`
   - `resume_drafts`: `persona_id`, `latest_ats_score`, `ats_status` (`pending` | `threshold_met` | `below_threshold` | `mismatch`), `ats_evaluation_id`
-  - `app_settings` (`app_settings_v1` JSON): `ats` config block (`threshold`, `maxRefinementPasses`, `minImprovementDelta`, `weights`, `enableLocalEmbeddings`, `localEmbeddingModelDownloaded`, `enableHiringAgentRubric`, `hiringAgentCommand`) + `mcp` config block (`httpEnabled`, `httpPort`)
+  - `app_settings` (`app_settings_v1` JSON): `ats` config block (`threshold`, `maxRefinementPasses`, `minImprovementDelta`, `weights`, `enableLocalEmbeddings`, `localEmbeddingModelDownloaded`, `enableHiringAgentRubric`, `hiringAgentCommand`) + `discovery` config block (`promotionMode`, `defaultIntervalMinutes`, `maxNewSourcesPerScan`, `maxAutoSourcesTotal`, `autoDisableAfterFailures`, `enabledAggregators`) + `mcp` config block (`httpEnabled`, `httpPort`)
 - **Non-Destructive Migration & Backup Compatibility:** Existing `v1.4` data migrates in-place without resetting SQLite; one default `"Default Profile"` `career_persona` is auto-seeded inheriting verified Master items so single-profile workflows keep working seamlessly. New runtime embedding models under `APP_DATA_DIR/runtime/models/` and `APP_DATA_DIR/secrets/mcp.token` remain strictly excluded from `.tar.gz` backups.
 
 ### 4.2 New Internal API Routes (`app/api/`)
@@ -250,6 +280,11 @@ To ensure what the user sees on screen matches the downloaded `.pdf` pixel-for-p
   - `GET / POST /api/personas`, `GET / PATCH / DELETE /api/personas/[id]`
   - `PUT /api/personas/[id]/items` (inclusion, ordering, variant selection)
   - `GET / POST /api/profile/bullet-variants`, `PATCH / DELETE /api/profile/bullet-variants/[id]`
+- **Active Job Discovery & Source Promotion:**
+  - `POST /api/discovery/scan` (enqueue `discovery.scan` background worker task for selected persona/search profile)
+  - `GET /api/discovery/scans/[id]` (status, jobs discovered, newly promoted company `job_sources`)
+  - `POST /api/sources/resolve-company` (resolve company name/domain to validated Greenhouse/Lever/Ashby/career portal URL)
+  - `PATCH /api/sources/[id]/approval` (approve/reject queued auto-discovered company portals)
 - **ATS & AI Resume Studio Updates:**
   - `POST /api/resumes/[id]/ats-evaluate` (score current draft + rendered PDF check)
   - `POST /api/resumes/[id]/refine` (run bounded refinement loop toward `settings.ats.threshold`)
@@ -285,8 +320,8 @@ To ensure what the user sees on screen matches the downloaded `.pdf` pixel-for-p
 1. **V2 Phase 1 — Master Bullet Variants, Role Personas & Seniority Engine:** Schema migrations, persona/variant CRUD, JD seniority classifier (`SDE2`/`SDE3`/`Senior SDE`), UI persona switcher + Search Profile seniority controls.
 2. **V2 Phase 2 — Dual-Layer ATS Engine & Bounded Refinement Loop:** `server/services/ats/` (Parser + JD Alignment + HackerRank Portfolio Rubric), `refine_resume` zero-hallucination loop, Settings ATS threshold controls, mismatch diagnosis UI.
 3. **V2 Phase 3 — Dual Manual/AI Studio Forms & `pdfjs-dist` PDF Preview:** Theme-matched Manual + AI diff Studio forms, Cover Letter studio upgrade, hash-cached `/preview-pdf` endpoints, shared `<PdfPreviewViewer />`, and Application Packet `.zip` exporter.
-4. **V2 Phase 4 — MCP Server & Audit Logs:** `scripts/mcp-server.mjs` (`@modelcontextprotocol/sdk`), full tool/resource catalog, loopback HTTP + token auth option, Settings MCP inspector & `mcp_tool_runs` log.
-5. **V2 Phase 5 — Verification & Release Gates:** Unit + security + ATS-loop evals (confirming 0 fabricated metrics across refinement iterations, seniority filter accuracy, MCP confirmation locks) + Playwright E2E across all new V2 flows.
+4. **V2 Phase 4 — Active "Scan Now" Discovery, Daily Source Promotion & MCP Server:** `discovery.scan` worker task + company-to-ATS-board resolver (`1440m` daily `job_sources` auto-registration + Settings caps), `scripts/mcp-server.mjs` (`@modelcontextprotocol/sdk`), full tool/resource catalog (`scan_related_jobs` included), loopback HTTP + token auth option, Settings MCP inspector & `mcp_tool_runs` log.
+5. **V2 Phase 5 — Verification & Release Gates:** Unit + security + ATS-loop evals (confirming 0 fabricated metrics across refinement iterations, seniority filter accuracy, SSRF/dedup/cap enforcement on auto-discovered `job_sources`, MCP confirmation locks) + Playwright E2E across all new V2 flows.
 
 ---
 
@@ -297,4 +332,5 @@ To ensure what the user sees on screen matches the downloaded `.pdf` pixel-for-p
 - [ ] **Strict Seniority Filtering:** With `SDE2, SDE3, Senior SDE` selected (`hardFilter: true`), `Intern`, `New Grad`, `Staff`, and `Principal` postings are deterministically excluded with clear diagnostic reasons.
 - [ ] **Manual + AI Forms & Diff Safety:** Users can edit resumes cleanly via the structured Manual Form OR submit scoped instructions in the AI Form, inspect a grounded diff + projected ATS score, and accept/discard safely.
 - [ ] **True Generated PDF Preview:** Both Resume Studio and Cover Letter Studio render the exact Playwright-generated PDF page-by-page inside the UI (`pdfjs-dist` canvas + extracted text verification) prior to download.
-- [ ] **MCP Server End-to-End:** External MCP clients (`claude`, `codex`, `cursor`, `agy`) can connect via `stdio`, list personas/jobs, tailor & refine a resume to ATS threshold, score ATS, generate cover letters, and export PDFs while strictly respecting factuality checks and human-only `applied` confirmation locks.
+- [ ] **Active "Scan Now" & Daily Source Promotion:** Clicking **Scan Now** runs `discovery.scan` in the background, surfaces matching `SDE2`/`SDE3`/`Senior SDE` roles, and registers clean, deduplicated company career portals into `job_sources` (`refresh_interval_minutes = 1440`) so the background scheduler scans them daily without duplicating sources or hitting blocked/SSRF targets.
+- [ ] **MCP Server End-to-End:** External MCP clients (`claude`, `codex`, `cursor`, `agy`) can connect via `stdio`, list personas/jobs, trigger job discovery, tailor & refine a resume to ATS threshold, score ATS, generate cover letters, and export PDFs while strictly respecting factuality checks and human-only `applied` confirmation locks.
