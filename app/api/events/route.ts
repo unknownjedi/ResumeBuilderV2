@@ -14,6 +14,33 @@ export const dynamic = "force-dynamic";
 const POLL_INTERVAL_MS = 750;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
+const globalForSse = globalThis as typeof globalThis & {
+  __pjcSseCleanups?: Set<() => void>;
+  __pjcSseSignalsRegistered?: boolean;
+};
+
+function getActiveSseCleanups(): Set<() => void> {
+  if (!globalForSse.__pjcSseCleanups) {
+    globalForSse.__pjcSseCleanups = new Set();
+  }
+  if (!globalForSse.__pjcSseSignalsRegistered && typeof process !== "undefined") {
+    globalForSse.__pjcSseSignalsRegistered = true;
+    const closeAllStreams = () => {
+      const cleanups = Array.from(globalForSse.__pjcSseCleanups ?? []);
+      for (const fn of cleanups) {
+        try {
+          fn();
+        } catch {
+          // Ignore individual cleanup errors during shutdown
+        }
+      }
+    };
+    process.once("SIGINT", closeAllStreams);
+    process.once("SIGTERM", closeAllStreams);
+  }
+  return globalForSse.__pjcSseCleanups;
+}
+
 function formatSseMessage(
   eventName: string,
   data: unknown,
@@ -50,12 +77,15 @@ export async function GET(req: Request): Promise<Response> {
   let pollTimer: NodeJS.Timeout | undefined;
   let heartbeatTimer: NodeJS.Timeout | undefined;
   let closed = false;
+  let cleanupRef: (() => void) | undefined;
+  const activeCleanups = getActiveSseCleanups();
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const cleanup = () => {
         if (closed) return;
         closed = true;
+        activeCleanups.delete(cleanup);
         if (pollTimer) clearInterval(pollTimer);
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         req.signal.removeEventListener("abort", onAbort);
@@ -65,6 +95,8 @@ export async function GET(req: Request): Promise<Response> {
           // Stream already closed
         }
       };
+      cleanupRef = cleanup;
+      activeCleanups.add(cleanup);
 
       const onAbort = () => {
         cleanup();
@@ -143,14 +175,15 @@ export async function GET(req: Request): Promise<Response> {
         enqueueText(": heartbeat\n\n");
       }, HEARTBEAT_INTERVAL_MS);
 
+      pollTimer.unref?.();
+      heartbeatTimer.unref?.();
+
       if (req.signal.aborted) {
         cleanup();
       }
     },
     cancel() {
-      closed = true;
-      if (pollTimer) clearInterval(pollTimer);
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      cleanupRef?.();
     },
   });
 

@@ -7,10 +7,10 @@
   },
   "packageManager": "npm@11.12.1",
   "scripts": {
-    "dev": "concurrently --kill-others --names web,worker \"next dev --hostname 127.0.0.1\" \"tsx watch worker/bootstrap.ts\"",
+    "dev": "node scripts/run-local.mjs --mode dev",
     "build:worker": "tsc -p worker/tsconfig.json && node -e \"if(!require('fs').existsSync('worker/dist/worker/bootstrap.js')){process.exit(1)}\"",
     "build": "next build && npm run build:worker",
-    "start:local": "concurrently --kill-others --names web,worker \"next start --hostname 127.0.0.1\" \"node worker/dist/worker/bootstrap.js\"",
+    "start:local": "node scripts/run-local.mjs --mode start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit && tsc -p worker/tsconfig.json --noEmit",
     "test": "vitest run",
