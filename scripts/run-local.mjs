@@ -33,14 +33,6 @@ function sendSignalToChild(child, signal) {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall back to direct child kill
-    }
-  }
   try {
     child.kill(signal);
   } catch {
@@ -75,10 +67,11 @@ function main() {
     workerCmdArgs = [workerEntry];
   }
 
+  // Stay in the caller's foreground process group (`detached: false`) so terminal Ctrl+C
+  // and Playwright webServer teardown never leave orphaned web/worker processes behind.
   const spawnOpts = {
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
   };
 
   const web = spawn(process.execPath, webArgs, spawnOpts);
@@ -179,6 +172,14 @@ function main() {
 
   process.on("SIGTERM", () => {
     beginShutdown("SIGTERM", 0, false);
+  });
+
+  process.on("exit", () => {
+    for (const c of children) {
+      if (!c.exited) {
+        sendSignalToChild(c.proc, "SIGKILL");
+      }
+    }
   });
 }
 
