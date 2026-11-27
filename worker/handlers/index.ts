@@ -53,6 +53,14 @@ import {
   ResumeServiceError,
 } from "../../server/services/resumes";
 import {
+  BackupServiceError,
+  createBackupArchive,
+  type BackupTrigger,
+} from "../../server/services/backup";
+import {
+  getSettings,
+} from "../../server/services/settings";
+import {
   buildSourceConfigFromRow,
   sanitizeSourceErrorText,
   testSource,
@@ -1531,7 +1539,69 @@ export async function handleDocumentExport(
 }
 
 /**
- * Builds the task handler registry for Slice 1–5 and future custom handlers.
+ * Worker handler for `backup.create` (`manual` or `scheduled` archive creation).
+ */
+export async function handleBackupCreate(
+  ctx: TaskHandlerContext
+): Promise<TaskHandlerResult> {
+  const payload =
+    parseJsonPayload<{ trigger?: BackupTrigger }>(ctx.task.payloadJson) ?? {};
+  const trigger: BackupTrigger = payload.trigger ?? "manual";
+
+  ctx.reportProgress({
+    stage: "creating_backup_archive",
+    percent: 25,
+    resourceType: null,
+    resourceId: null,
+  });
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  const db = drizzle(ctx.sqlite, { schema });
+  const settings = getSettings(db);
+
+  let backup;
+  try {
+    backup = await createBackupArchive({
+      sqlite: ctx.sqlite,
+      trigger,
+      retentionCount: settings.backupRetentionCount,
+    });
+  } catch (err) {
+    if (err instanceof BackupServiceError) {
+      throw new NonRetryableTaskError(err.code, err.message);
+    }
+    throw err;
+  }
+
+  if (ctx.isCancelled()) {
+    throw new TaskCancelledError();
+  }
+
+  ctx.reportProgress({
+    stage: "completed",
+    percent: 100,
+    resourceType: null,
+    resourceId: null,
+  });
+
+  return {
+    resourceType: null,
+    resourceId: null,
+    resultSummary: {
+      filename: backup.filename,
+      sizeBytes: backup.sizeBytes,
+      fileCount: backup.fileCount,
+      trigger: backup.trigger,
+      createdAt: backup.createdAt,
+    },
+  };
+}
+
+/**
+ * Builds the task handler registry for Slice 1–6 and future custom handlers.
  */
 export function createTaskHandlerRegistry(
   customHandlers?: Record<string, TaskHandler>
@@ -1546,6 +1616,7 @@ export function createTaskHandlerRegistry(
   registry.set("job.match", handleJobMatch);
   registry.set("resume.generate", handleResumeGenerate);
   registry.set("document.export", handleDocumentExport);
+  registry.set("backup.create", handleBackupCreate);
 
   if (customHandlers) {
     for (const [taskType, handler] of Object.entries(customHandlers)) {

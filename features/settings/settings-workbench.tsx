@@ -33,6 +33,7 @@ import { useToast } from "@/components/ui/toast";
 import { cn } from "@/components/ui/cn";
 import { useSse } from "@/components/shell/sse-provider";
 import { SourcesManager } from "@/features/job-sources/sources-manager";
+import { BackupRestorePanel } from "@/features/settings/backup-restore-panel";
 
 export type AiProviderPreset =
   | "none"
@@ -374,6 +375,7 @@ export function SettingsWorkbench() {
 
   const [confirmingBackup, setConfirmingBackup] = React.useState(false);
   const [runningBackup, setRunningBackup] = React.useState(false);
+  const [backupRefreshTrigger, setBackupRefreshTrigger] = React.useState(0);
 
   const [diagnostics, setDiagnostics] = React.useState<Record<string, unknown> | null>(
     null
@@ -512,6 +514,20 @@ export function SettingsWorkbench() {
     applyDiagnosticsResult(result);
   }, [applyDiagnosticsResult, fetchDiagnosticsRequest]);
 
+  const applySettingsResult = React.useCallback(
+    (res: Awaited<ReturnType<typeof fetchSettingsRequest>>) => {
+      setSettingsUnavailable(res.unavailable);
+      if (res.parsed) {
+        setForm(res.parsed.form);
+        setSavedDailyBudget(res.parsed.form.dailyAnalysisBudget);
+        setCliAvailability(res.parsed.cliAvailability);
+        setBudgetOverrideConfirmed(res.parsed.form.dailyAnalysisBudget > 25);
+      }
+      setSettingsLoading(false);
+    },
+    []
+  );
+
   const loadTasks = React.useCallback(async () => {
     setTasksError(null);
     const result = await fetchTasksRequest();
@@ -523,14 +539,7 @@ export function SettingsWorkbench() {
 
     void fetchSettingsRequest().then((res) => {
       if (!active) return;
-      setSettingsUnavailable(res.unavailable);
-      if (res.parsed) {
-        setForm(res.parsed.form);
-        setSavedDailyBudget(res.parsed.form.dailyAnalysisBudget);
-        setCliAvailability(res.parsed.cliAvailability);
-        setBudgetOverrideConfirmed(res.parsed.form.dailyAnalysisBudget > 25);
-      }
-      setSettingsLoading(false);
+      applySettingsResult(res);
     });
 
     void fetchDiagnosticsRequest().then((res) => {
@@ -548,6 +557,7 @@ export function SettingsWorkbench() {
     };
   }, [
     applyDiagnosticsResult,
+    applySettingsResult,
     applyTasksResult,
     fetchDiagnosticsRequest,
     fetchSettingsRequest,
@@ -729,6 +739,12 @@ export function SettingsWorkbench() {
     }
   };
 
+  const handleWorkspaceMutated = React.useCallback(() => {
+    void fetchSettingsRequest().then(applySettingsResult);
+    void loadDiagnostics();
+    void loadTasks();
+  }, [applySettingsResult, fetchSettingsRequest, loadDiagnostics, loadTasks]);
+
   const handleCreateBackup = async () => {
     setRunningBackup(true);
     try {
@@ -737,16 +753,35 @@ export function SettingsWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trigger: "manual" }),
       });
+      const body: unknown = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const rec = asRecord(body);
+        const nestedErr = rec ? asRecord(rec.error) : null;
+        const msg =
+          (nestedErr && typeof nestedErr.message === "string" && nestedErr.message) ||
+          (rec && typeof rec.error === "string" && rec.error) ||
+          `HTTP ${response.status}`;
+        throw new Error(msg);
       }
-      toast({
-        title: "Backup queued",
-        description: "Check Diagnostics & Tasks for progress.",
-        tone: "accent",
-      });
+      const rec = asRecord(body);
+      const backup = rec ? asRecord(rec.backup) : null;
+      if (backup && typeof backup.filename === "string") {
+        toast({
+          title: "Backup created",
+          description: `Saved ${backup.filename}.`,
+          tone: "accent",
+        });
+        setBackupRefreshTrigger((prev) => prev + 1);
+        void loadDiagnostics();
+      } else {
+        toast({
+          title: "Backup queued",
+          description: "Check Diagnostics & Tasks for progress.",
+          tone: "accent",
+        });
+        void loadTasks();
+      }
       setConfirmingBackup(false);
-      void loadTasks();
     } catch (error) {
       toast({
         title: "Backup failed to start",
@@ -1288,7 +1323,7 @@ export function SettingsWorkbench() {
         </TabsContent>
 
         {/* 2) Resume Defaults & Backups */}
-        <TabsContent value="defaults" className="max-w-2xl space-y-6">
+        <TabsContent value="defaults" className="max-w-3xl space-y-6">
           <section className="space-y-3">
             <div>
               <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">
@@ -1415,6 +1450,12 @@ export function SettingsWorkbench() {
               </div>
             )}
           </div>
+
+          <BackupRestorePanel
+            refreshTrigger={backupRefreshTrigger}
+            showCreateButton={false}
+            onWorkspaceMutated={handleWorkspaceMutated}
+          />
         </TabsContent>
 
         {/* 3) Diagnostics & Recent Tasks */}
