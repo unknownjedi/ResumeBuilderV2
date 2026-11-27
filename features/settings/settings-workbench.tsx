@@ -137,15 +137,16 @@ const AI_PRESETS: Array<{
     value: "opencode",
     label: "OpenCode (opencode)",
     binary: "opencode",
-    description: "Uses your local `opencode` CLI configuration.",
-    modelPlaceholder: "anthropic/claude-sonnet-4 or provider/model",
+    description: "Runs your local `opencode` CLI headlessly in the background.",
+    modelPlaceholder: "opencode-go/deepseek-v4.1-flash or provider/model",
   },
   {
     value: "agy",
-    label: "Antigravity (agy)",
+    label: "Antigravity CLI (agy)",
     binary: "agy",
-    description: "Uses your local `agy` CLI binary.",
-    modelPlaceholder: "Model name configured in agy",
+    description:
+      "Runs a standalone headless `agy` CLI binary in the background (never launches desktop apps).",
+    modelPlaceholder: "Standalone headless CLI model ID",
   },
   {
     value: "gemini",
@@ -289,7 +290,9 @@ function parseSettingsPayload(payload: unknown): {
   if (Array.isArray(root.detectedClis)) {
     for (const entry of root.detectedClis) {
       const rec = asRecord(entry);
-      const provider = rec && typeof rec.provider === "string" ? rec.provider : null;
+      const provider = rec
+        ? pickString(rec, ["id", "provider"]) ?? null
+        : null;
       if (provider && typeof rec?.available === "boolean") {
         cliAvailability[provider] = {
           available: rec.available,
@@ -661,10 +664,10 @@ export function SettingsWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider: form.aiProvider,
-          model: form.aiModel.trim() || undefined,
-          cliCommand: form.aiCliCommand.trim() || undefined,
-          cliArgsTemplate: form.aiCliArgsTemplate.trim() || undefined,
-          baseUrl: form.aiBaseUrl.trim() || undefined,
+          model: form.aiModel.trim(),
+          cliCommand: form.aiCliCommand.trim(),
+          cliArgsTemplate: form.aiCliArgsTemplate.trim(),
+          baseUrl: form.aiBaseUrl.trim(),
           temperature: form.aiTemperature,
         }),
       });

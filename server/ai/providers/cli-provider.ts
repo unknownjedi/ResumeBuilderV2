@@ -1,8 +1,10 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { resolveAppDataDir } from "../../files/paths";
+import { redactPaths, redactString } from "../../security/redaction";
 import {
   AiProviderError,
   type AiConfig,
@@ -27,6 +29,29 @@ const CLI_PRESET_BINARIES: Record<Exclude<CliProviderType, "custom">, string> = 
   agy: "agy",
   gemini: "gemini",
 };
+
+function getEffectivePathValue(env: NodeJS.ProcessEnv = process.env): string {
+  const basePath = env.PATH ?? "";
+  if (env !== process.env || process.platform === "win32") {
+    return basePath;
+  }
+
+  const dirs = basePath.split(path.delimiter).filter(Boolean);
+  const home = env.HOME || os.homedir();
+  const extraDirs = [
+    path.join(home, ".opencode", "bin"),
+    path.join(home, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+
+  for (const extra of extraDirs) {
+    if (!dirs.includes(extra)) {
+      dirs.push(extra);
+    }
+  }
+  return dirs.join(path.delimiter);
+}
 
 function buildSafeChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const allowedKeys = [
@@ -58,6 +83,10 @@ function buildSafeChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Process
     if (val !== undefined) {
       safeEnv[key] = val;
     }
+  }
+  const effectivePath = getEffectivePathValue(env);
+  if (effectivePath) {
+    safeEnv.PATH = effectivePath;
   }
   return safeEnv;
 }
@@ -232,17 +261,24 @@ function buildStructuredPrompt<T>(input: LlmGenerateInput<T>, jsonSchema: unknow
   ].join("\n");
 }
 
-function isExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
+function resolveExecutablePath(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env
+): string | null {
   if (path.isAbsolute(command)) {
     try {
-      fs.accessSync(command, fs.constants.X_OK);
-      return true;
+      const stat = fs.statSync(command);
+      if (!stat.isFile()) return null;
+      if (process.platform !== "win32") {
+        fs.accessSync(command, fs.constants.X_OK);
+      }
+      return command;
     } catch {
-      return false;
+      return null;
     }
   }
 
-  const pathEnv = env.PATH ?? "";
+  const pathEnv = getEffectivePathValue(env);
   const dirs = pathEnv.split(path.delimiter).filter(Boolean);
   const extensions =
     process.platform === "win32"
@@ -258,13 +294,79 @@ function isExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.en
         if (process.platform !== "win32") {
           fs.accessSync(candidate, fs.constants.X_OK);
         }
-        return true;
+        return candidate;
       } catch {
         // Continue scanning PATH
       }
     }
   }
-  return false;
+  return null;
+}
+
+function isDesktopAppBundleTarget(executablePath: string): boolean {
+  const candidates = [executablePath];
+  try {
+    candidates.push(fs.realpathSync(executablePath));
+  } catch {
+    // Keep original path
+  }
+  return candidates.some((candidate) => candidate.includes(".app/Contents/"));
+}
+
+function isExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const resolved = resolveExecutablePath(command, env);
+  if (!resolved) return false;
+  if (isDesktopAppBundleTarget(resolved)) return false;
+  return true;
+}
+
+function assertHeadlessCliExecutable(
+  provider: CliProviderType,
+  command: string,
+  hasArgsTemplate: boolean
+): void {
+  const resolved = resolveExecutablePath(command);
+  if (resolved && !hasArgsTemplate && isDesktopAppBundleTarget(resolved)) {
+    throw new AiProviderError(
+      "PROVIDER_UNAVAILABLE",
+      `Provider '${provider}' resolves to a desktop application bundle rather than a standalone headless CLI. Use a background CLI such as opencode, claude, codex, or gemini.`,
+      { retryable: false }
+    );
+  }
+}
+
+function extractSafeCliFailureDetail(stderr: string, stdout: string): string {
+  const source = stderr.trim() || stdout.trim();
+  if (!source) return "";
+
+  const lines = source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    if (line.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        const errObj =
+          typeof parsed.error === "object" && parsed.error !== null
+            ? (parsed.error as Record<string, unknown>)
+            : null;
+        const msg =
+          (errObj && typeof errObj.message === "string" && errObj.message) ||
+          (typeof parsed.message === "string" && parsed.message) ||
+          "";
+        if (msg.trim()) {
+          return redactPaths(redactString(msg.trim())).slice(0, 180);
+        }
+      } catch {
+        // Not valid JSON event line; inspect plain text below
+      }
+    }
+  }
+
+  const firstPlain = lines.find((l) => !l.startsWith("{")) ?? lines[0] ?? "";
+  return redactPaths(redactString(firstPlain)).slice(0, 180);
 }
 
 /**
@@ -334,6 +436,12 @@ export class CliLlmProvider implements LlmProvider {
         prompt
       );
 
+      assertHeadlessCliExecutable(
+        this.id,
+        command,
+        Boolean(this.config.cliArgsTemplate.trim())
+      );
+
       const { stdout, stderr, exitCode, timedOut, cancelled } = await this.runSubprocess(
         command,
         args,
@@ -355,17 +463,26 @@ export class CliLlmProvider implements LlmProvider {
       }
 
       if (exitCode !== 0) {
-        const lowerErr = stderr.toLowerCase();
-        if (lowerErr.includes("rate limit") || lowerErr.includes("429") || lowerErr.includes("quota")) {
+        const detail = extractSafeCliFailureDetail(stderr, stdout);
+        const lowerCombined = `${stderr}\n${detail}`.toLowerCase();
+        if (
+          lowerCombined.includes("rate limit") ||
+          lowerCombined.includes("429") ||
+          lowerCombined.includes("quota")
+        ) {
           throw new AiProviderError(
             "RATE_LIMIT",
-            "AI CLI reported a rate limit or quota error.",
+            detail
+              ? `AI CLI reported a rate limit or quota error: ${detail}`
+              : "AI CLI reported a rate limit or quota error.",
             { retryable: true }
           );
         }
         throw new AiProviderError(
           "PROVIDER_UNAVAILABLE",
-          `AI CLI exited with status ${exitCode ?? "unknown"}.`,
+          detail
+            ? `AI CLI exited with status ${exitCode ?? "unknown"}: ${detail}`
+            : `AI CLI exited with status ${exitCode ?? "unknown"}.`,
           { retryable: false }
         );
       }
@@ -408,6 +525,7 @@ export class CliLlmProvider implements LlmProvider {
         child = this.spawnImpl(command, args, {
           cwd,
           shell: false,
+          windowsHide: true,
           env: buildSafeChildEnv(),
           stdio: ["pipe", "pipe", "pipe"],
         });

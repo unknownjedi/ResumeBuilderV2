@@ -30,6 +30,8 @@ import { isPrivateOrReservedIp, validatePublicHttpUrl } from "@/server/security/
 import { getSettings, updateSettings } from "@/server/services/settings";
 import { getDiagnosticsReport } from "@/server/services/diagnostics";
 import { CliLlmProvider } from "@/server/ai/providers/cli-provider";
+import { parseAndValidateStructuredOutput } from "@/server/ai/providers/json-extract";
+import { AiProviderError } from "@/server/ai/types";
 import { z } from "zod";
 
 describe("Slice 1 Foundation", () => {
@@ -207,6 +209,81 @@ describe("Slice 1 Foundation", () => {
       if (prevAppData === undefined) delete process.env.APP_DATA_DIR;
       else process.env.APP_DATA_DIR = prevAppData;
       sqlite.close();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("extracts opencode NDJSON payloads and token usage while surfacing redacted CLI failures", async () => {
+    const pingSchema = z.object({ ok: z.literal(true), echo: z.string() });
+    const ndjson = [
+      JSON.stringify({
+        type: "step_start",
+        timestamp: 1,
+        part: { type: "step-start", snapshot: "abc" },
+      }),
+      JSON.stringify({
+        type: "text",
+        timestamp: 2,
+        part: { type: "text", text: '{"ok":true,"echo":"ready"}' },
+      }),
+      JSON.stringify({
+        type: "step_finish",
+        timestamp: 3,
+        part: {
+          type: "step-finish",
+          cost: 0.0012,
+          tokens: { input: 120, output: 18, total: 138 },
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseAndValidateStructuredOutput(ndjson, pingSchema);
+    expect(parsed.data).toEqual({ ok: true, echo: "ready" });
+    expect(parsed.usage).toEqual({
+      inputTokens: 120,
+      outputTokens: 18,
+      totalTokens: 138,
+      costUsd: 0.0012,
+    });
+
+    const ndjsonErr = JSON.stringify({
+      type: "error",
+      timestamp: 1,
+      error: { message: "Invalid model reference: deepseek-v4.1-flash" },
+    });
+    expect(() => parseAndValidateStructuredOutput(ndjsonErr, pingSchema)).toThrow(
+      AiProviderError
+    );
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pjc-cli-err-"));
+    const prevAppData = process.env.APP_DATA_DIR;
+    process.env.APP_DATA_DIR = tmpRoot;
+    try {
+      const failingProvider = new CliLlmProvider("custom", {
+        provider: "custom",
+        cliCommand: process.execPath,
+        cliArgsTemplate: '-e "console.error(\'Invalid model /Users/alice/secret\'); process.exit(1)"',
+        model: "bad-model",
+        baseUrl: "",
+        temperature: 0.2,
+        timeoutMs: 10_000,
+        dataSharingAccepted: true,
+        dailyAnalysisCap: 25,
+        actionAnalysisCap: 10,
+      });
+
+      await expect(
+        failingProvider.generateStructured({
+          task: "unit-fail-test",
+          systemPrompt: "Ping",
+          userPayload: {},
+          schema: pingSchema,
+          model: "bad-model",
+        })
+      ).rejects.toThrow(/exited with status 1: Invalid model \/Users\/\[REDACTED\]\/secret/);
+    } finally {
+      if (prevAppData === undefined) delete process.env.APP_DATA_DIR;
+      else process.env.APP_DATA_DIR = prevAppData;
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
