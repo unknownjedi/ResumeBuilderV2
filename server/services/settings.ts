@@ -1,7 +1,12 @@
 import { eq } from "drizzle-orm";
-import { z } from "zod";
+import { z, ZodError } from "zod";
+import {
+  tokenizeArgsTemplate,
+  validateExecutableCommand,
+} from "../ai/providers/cli-provider";
 import {
   AiConfigSchema,
+  AiProviderError,
   AiProviderTypeSchema,
   type AiConfig,
 } from "../ai/types";
@@ -170,6 +175,40 @@ export function updateSettings(
     backupRetentionCount:
       patch.backupRetentionCount ?? current.backupRetentionCount,
   });
+
+  if (nextSettings.ai.cliCommand.trim()) {
+    try {
+      validateExecutableCommand(nextSettings.ai.cliCommand);
+    } catch (err) {
+      throw new ZodError([
+        {
+          code: "custom",
+          path: ["ai", "cliCommand"],
+          message:
+            err instanceof AiProviderError
+              ? err.message
+              : "Invalid CLI command.",
+        },
+      ]);
+    }
+  }
+
+  if (nextSettings.ai.cliArgsTemplate.trim()) {
+    try {
+      tokenizeArgsTemplate(nextSettings.ai.cliArgsTemplate);
+    } catch (err) {
+      throw new ZodError([
+        {
+          code: "custom",
+          path: ["ai", "cliArgsTemplate"],
+          message:
+            err instanceof AiProviderError
+              ? err.message
+              : "Invalid CLI arguments template.",
+        },
+      ]);
+    }
+  }
 
   const nowIso = new Date().toISOString();
   const valueJson = JSON.stringify(nextSettings);

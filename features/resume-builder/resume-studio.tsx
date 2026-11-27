@@ -763,12 +763,36 @@ export function ResumeStudio({ draftId }: { draftId: string }) {
   }, [draftId, loadDraft, subscribe]);
 
   React.useEffect(() => {
-    return () => {
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirtyRef.current) {
+        e.preventDefault();
       }
     };
-  }, []);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      if (isDirtyRef.current && latestSnapshotRef.current) {
+        const snap = latestSnapshotRef.current;
+        isDirtyRef.current = false;
+        void fetch(`/api/resumes/${encodeURIComponent(draftId)}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            structuredContent: reindexStructuredContent(snap.structuredContent),
+            templateSettings: snap.templateSettings,
+          }),
+          keepalive: true,
+        }).catch(() => undefined);
+      }
+    };
+  }, [draftId]);
 
   const persistSnapshot = React.useCallback(
     async (snapshot: StudioSnapshot) => {
@@ -1790,7 +1814,7 @@ export function ResumeStudio({ draftId }: { draftId: string }) {
                 <iframe
                   title="Live resume preview"
                   srcDoc={previewHtml}
-                  sandbox="allow-same-origin"
+                  sandbox=""
                   className="h-full w-full border-0 bg-white"
                   style={{
                     minHeight:

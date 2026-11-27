@@ -691,7 +691,9 @@ export function SourcesManager() {
                           id: {source.sourceIdentifier}
                         </span>
                       ) : null}
-                      {source.baseUrl ? (
+                      {source.baseUrl &&
+                      (source.baseUrl.startsWith("https://") ||
+                        source.baseUrl.startsWith("http://")) ? (
                         <a
                           href={source.baseUrl}
                           target="_blank"

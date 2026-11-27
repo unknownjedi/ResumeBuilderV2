@@ -133,6 +133,8 @@ function hardenSanitizedHtml(html: string): string {
             child.remove();
             continue;
           }
+          // Recursively sanitize descendants BEFORE unwrapping so promoted children cannot bypass attribute/tag filtering.
+          walk(child);
           const fragment = doc.createDocumentFragment();
           while (child.firstChild) {
             fragment.appendChild(child.firstChild);

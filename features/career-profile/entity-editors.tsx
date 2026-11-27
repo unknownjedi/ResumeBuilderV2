@@ -80,6 +80,22 @@ function includesSearch(haystack: Array<string | null | undefined>, query: strin
   return haystack.some((val) => val && val.toLowerCase().includes(q));
 }
 
+function toSafeExternalUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    if (parsed.username || parsed.password) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function extractCreatedId(res: Record<string, unknown>): string | null {
   if (typeof res.id === "string" && res.id) return res.id;
   for (const key of ["item", "record", "data", "skill"]) {
@@ -1735,17 +1751,21 @@ export function ProjectsSection({
                         <h4 className="text-[15px] font-semibold text-[var(--text-primary)]">
                           {proj.name}
                         </h4>
-                        {proj.url ? (
-                          <a
-                            href={proj.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline"
-                          >
-                            <span>Link</span>
-                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                          </a>
-                        ) : null}
+                        {(() => {
+                          const safeProjUrl = toSafeExternalUrl(proj.url);
+                          if (!safeProjUrl) return null;
+                          return (
+                            <a
+                              href={safeProjUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline"
+                            >
+                              <span>Link</span>
+                              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                            </a>
+                          );
+                        })()}
                       </div>
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-data text-[12px] text-[var(--text-tertiary)]">
                         {dateRange ? <span>{dateRange}</span> : null}
@@ -3441,17 +3461,21 @@ export function CredentialsSection({
                           <h4 className="text-[14px] font-semibold text-[var(--text-primary)]">
                             {cert.name}
                           </h4>
-                          {cert.credentialUrl ? (
-                            <a
-                              href={cert.credentialUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline"
-                            >
-                              <span>Verify link</span>
-                              <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                            </a>
-                          ) : null}
+                          {(() => {
+                            const safeCertUrl = toSafeExternalUrl(cert.credentialUrl);
+                            if (!safeCertUrl) return null;
+                            return (
+                              <a
+                                href={safeCertUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[12px] text-[var(--accent)] hover:underline"
+                              >
+                                <span>Verify link</span>
+                                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                              </a>
+                            );
+                          })()}
                         </div>
                         <p className="mt-0.5 font-data text-[12px] text-[var(--text-secondary)]">
                           {[

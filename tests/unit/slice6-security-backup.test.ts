@@ -4,7 +4,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import * as tar from "tar";
 import { afterEach, describe, expect, it } from "vitest";
-import { createSqliteConnection } from "@/server/db/client";
+import { createTestDatabase, createSqliteConnection } from "@/server/db/client";
 import { ensureAppDirectories, writeSecureFile } from "@/server/files/paths";
 import { guardMutation, validateHostAndOrigin } from "@/server/security/host-origin";
 import { redactString, redactValue } from "@/server/security/redaction";
@@ -17,7 +17,13 @@ import {
   validateBackupArchive,
 } from "@/server/services/backup";
 import { beginMaintenance, finishMaintenance, getMaintenanceRecord } from "@/server/services/maintenance";
-import { getProfileSingleton, upsertProfile } from "@/server/services/profile";
+import {
+  createCertification,
+  createProject,
+  getProfileSingleton,
+  upsertProfile,
+} from "@/server/services/profile";
+import { updateSettings } from "@/server/services/settings";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "@/server/db/schema/index";
 
@@ -347,6 +353,39 @@ describe("Slice 6 Security Audit, Backup, Restore & Reset", () => {
       }
     } finally {
       if (sqlite.open) sqlite.close();
+    }
+  });
+
+  it("rejects unsafe URL schemes in career profile entities and invalid CLI commands in settings", () => {
+    const { db, sqlite } = createTestDatabase();
+    try {
+      expect(() =>
+        upsertProfile({ fullName: "Ada", websiteUrl: "javascript:alert(1)" }, db)
+      ).toThrow();
+      expect(() =>
+        upsertProfile({ fullName: "Ada", linkedinUrl: "data:text/html,<script>" }, db)
+      ).toThrow();
+      expect(() =>
+        createProject({ name: "Proj", url: "javascript:alert(1)" }, db)
+      ).toThrow();
+      expect(() =>
+        createCertification({ name: "Cert", credentialUrl: "javascript:alert(1)" }, db)
+      ).toThrow();
+
+      expect(() =>
+        updateSettings(
+          { ai: { provider: "custom", cliCommand: "echo; rm -rf /" } },
+          db
+        )
+      ).toThrow();
+      expect(() =>
+        updateSettings(
+          { ai: { provider: "custom", cliCommand: "claude", cliArgsTemplate: '"unclosed' } },
+          db
+        )
+      ).toThrow();
+    } finally {
+      sqlite.close();
     }
   });
 });

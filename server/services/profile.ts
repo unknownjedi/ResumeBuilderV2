@@ -64,6 +64,27 @@ function nullableTrimmedString(maxLength: number) {
     });
 }
 
+function nullableSafeHttpUrl(maxLength: number) {
+  return nullableTrimmedString(maxLength).refine(
+    (val) => {
+      if (val === undefined || val === null) return true;
+      try {
+        const parsed = new URL(val);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          return false;
+        }
+        if (parsed.username || parsed.password) {
+          return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "Only valid http:// or https:// URLs without credentials are allowed." }
+  );
+}
+
 export const ProfileUpsertSchema = z
   .object({
     fullName: z.string().trim().max(200).optional(),
@@ -72,9 +93,9 @@ export const ProfileUpsertSchema = z
     location: nullableTrimmedString(200),
     headline: nullableTrimmedString(300),
     summary: nullableTrimmedString(4000),
-    websiteUrl: nullableTrimmedString(512),
-    linkedinUrl: nullableTrimmedString(512),
-    githubUrl: nullableTrimmedString(512),
+    websiteUrl: nullableSafeHttpUrl(512),
+    linkedinUrl: nullableSafeHttpUrl(512),
+    githubUrl: nullableSafeHttpUrl(512),
     noticePeriod: nullableTrimmedString(120),
     workAuthorizationSummary: nullableTrimmedString(300),
     additionalDetails: z.union([z.record(z.string(), z.unknown()), z.null()]).optional(),
@@ -126,7 +147,7 @@ export const ProjectCreateSchema = z
     metricsJson: nullableTrimmedString(16000),
     startDate: nullableTrimmedString(64),
     endDate: nullableTrimmedString(64),
-    url: nullableTrimmedString(512),
+    url: nullableSafeHttpUrl(512),
     targetRoles: z.union([z.array(z.string().trim().min(1).max(120)), z.null()]).optional(),
     targetRolesJson: nullableTrimmedString(4000),
     sortOrder: z.number().int().min(0).max(100000).optional(),
@@ -211,7 +232,7 @@ export const CertificationCreateSchema = z
     issuer: nullableTrimmedString(200),
     issueDate: nullableTrimmedString(64),
     expiryDate: nullableTrimmedString(64),
-    credentialUrl: nullableTrimmedString(512),
+    credentialUrl: nullableSafeHttpUrl(512),
     sortOrder: z.number().int().min(0).max(100000).optional(),
     verificationStatus: VerificationStatusSchema.optional(),
     origin: FactOriginSchema.optional(),

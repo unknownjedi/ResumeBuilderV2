@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import BetterSqlite3 from "better-sqlite3";
 import {
   closeDatabase,
   getSqlite,
@@ -6,6 +8,7 @@ import {
 } from "../server/db/client";
 import type { MaintenanceState } from "../server/db/schema/system";
 import { pruneOldEvents } from "../server/events/task-events";
+import { ensureAppDirectories } from "../server/files/paths";
 import {
   claimNextTask,
   completeTaskFailure,
@@ -158,13 +161,44 @@ function toSafeError(err: unknown): {
   };
 }
 
+function getFileIno(filePath: string | null): number | bigint | null {
+  if (!filePath) return null;
+  try {
+    return fs.statSync(filePath).ino;
+  } catch {
+    return null;
+  }
+}
+
+function readMaintenanceStateReadonly(filePath: string): MaintenanceState | null {
+  if (!fs.existsSync(filePath)) return null;
+  let roDb: SqliteDatabase | null = null;
+  try {
+    roDb = new BetterSqlite3(filePath, { readonly: true });
+    const row = roDb
+      .prepare(`SELECT state FROM system_maintenance WHERE id = 1`)
+      .get() as { state: MaintenanceState } | undefined;
+    return row?.state ?? "normal";
+  } catch {
+    return null;
+  } finally {
+    if (roDb?.open) {
+      roDb.close();
+    }
+  }
+}
+
 /**
  * Starts the local background worker loop with lease renewal, maintenance coordination,
  * startup scheduler catch-up, and bounded graceful shutdown.
  */
 export function startWorker(options: StartWorkerOptions = {}): WorkerHandle {
   const usesOwnedSingleton = !options.sqlite;
-  const sqlite = options.sqlite ?? getSqlite();
+  const dbFilePath = usesOwnedSingleton
+    ? ensureAppDirectories().databaseFile
+    : null;
+  let sqlite = options.sqlite ?? getSqlite();
+  let openedIno = getFileIno(dbFilePath);
   const workerId =
     options.workerId ??
     `worker-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -335,6 +369,47 @@ export function startWorker(options: StartWorkerOptions = {}): WorkerHandle {
       const nowMs = now.getTime();
       const nowIso = now.toISOString();
 
+      if (usesOwnedSingleton && dbFilePath) {
+        if (!sqlite.open) {
+          const diskState = readMaintenanceStateReadonly(dbFilePath);
+          if (diskState === "normal") {
+            try {
+              sqlite = getSqlite();
+              openedIno = getFileIno(dbFilePath);
+              logWorker("info", "Worker reconnected to database after maintenance", {
+                workerId,
+              });
+            } catch (err) {
+              logWorker("warn", "Waiting to reconnect worker database", {
+                workerId,
+                errorCode: err instanceof Error ? err.name : "DB_REOPEN_WAIT",
+              });
+              await waitBounded(idleMinMs);
+              continue;
+            }
+          } else {
+            await waitBounded(idleMinMs);
+            continue;
+          }
+        } else {
+          const diskIno = getFileIno(dbFilePath);
+          if (diskIno !== null && openedIno !== null && diskIno !== openedIno) {
+            closeDatabase();
+            const diskState = readMaintenanceStateReadonly(dbFilePath);
+            if (diskState === "normal") {
+              sqlite = getSqlite();
+              openedIno = getFileIno(dbFilePath);
+              logWorker("info", "Worker detected replaced database file and reconnected", {
+                workerId,
+              });
+            } else {
+              await waitBounded(idleMinMs);
+              continue;
+            }
+          }
+        }
+      }
+
       let maintenanceState: MaintenanceState = "normal";
       try {
         maintenanceState = getMaintenanceState(sqlite);
@@ -361,12 +436,20 @@ export function startWorker(options: StartWorkerOptions = {}): WorkerHandle {
             errorCode: err instanceof Error ? err.name : "MAINTENANCE_ACK_ERROR",
           });
         }
+        if (usesOwnedSingleton) {
+          closeDatabase();
+          openedIno = null;
+        }
         await waitBounded(idleMinMs);
         continue;
       }
 
       if (maintenanceState !== "normal") {
-        // Strictly perform zero SQLite writes while paused, restoring, or resetting.
+        // Release DB handle in multi-process mode so restore/reset never leaves a dead inode open.
+        if (usesOwnedSingleton && sqlite.open) {
+          closeDatabase();
+          openedIno = null;
+        }
         await waitBounded(idleMinMs);
         continue;
       }

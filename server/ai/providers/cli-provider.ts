@@ -62,7 +62,7 @@ function buildSafeChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Process
   return safeEnv;
 }
 
-function validateExecutableCommand(command: string): string {
+export function validateExecutableCommand(command: string): string {
   const trimmed = command.trim();
   if (!trimmed) {
     throw new AiProviderError("PROVIDER_NOT_CONFIGURED", "CLI command is not configured.");
@@ -82,7 +82,7 @@ function validateExecutableCommand(command: string): string {
   return trimmed;
 }
 
-function tokenizeArgsTemplate(template: string): string[] {
+export function tokenizeArgsTemplate(template: string): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
